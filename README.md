@@ -107,8 +107,10 @@ override the catalog.
 
 **Ingest.** Ten connector kinds — RSS/Atom, Reddit, Hacker News, arXiv, HF
 daily papers, HF trending models, GitHub releases, GitHub new-and-hot repos,
-Google News (for vendors that publish no feed), and X. Each source's health is
-tracked; a broken feed is skipped, never fatal.
+Google News (for vendors that publish no feed), and X. When a feed only
+gives a title or a teaser, ingest GETs the linked page (capped per source)
+and stores the stripped article text for the in-app reader. Each source's
+health is tracked; a broken feed is skipped, never fatal.
 
 **Deduplication.** URLs are canonicalised (tracking params stripped, AMP
 suffixes removed, host normalised) so the same story arriving from six places

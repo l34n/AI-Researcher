@@ -20,6 +20,7 @@ from typing import Any
 
 from .config import Settings, Source, load_sources
 from .connectors import build_registry
+from .connectors.article import hydrate_items
 from .db import Database, jdump, jload
 from .enrich import ChatRouter, Embedder, Enricher, Judge
 from .enrich.relevance import apply_relevance
@@ -214,18 +215,26 @@ class Pipeline:
             self.progress.source_done(src.key, src.name, status="error", new_items=0)
             return {"status": "error", "new": 0, "error": str(exc)[:200]}
 
-        latency = (time.monotonic() - started) * 1000
-        events = (getattr(fetcher, "events", []) or [])[events_before:]
-        http_stats = _summarise_http(events)
         status = result.status
         if result.status == "error" and (
             "429" in (result.error or "") or "rate" in (result.error or "").lower()
         ):
             status = "rate-limited"
 
+        if status not in ("error", "rate-limited") and result.items:
+            try:
+                await hydrate_items(fetcher, result.items, kind=src.kind)
+            except Exception as exc:  # noqa: BLE001
+                log.info("article hydrate skipped for %s: %s", src.key, exc)
+
+        latency = (time.monotonic() - started) * 1000
+        events = (getattr(fetcher, "events", []) or [])[events_before:]
+        http_stats = _summarise_http(events)
+
+        if result.cursor:
+            self.db.set_kv(f"cursor:{src.key}", result.cursor)
+
         if status in ("error", "rate-limited"):
-            if result.cursor:
-                self.db.set_kv(f"cursor:{src.key}", result.cursor)
             self._record_source_status(
                 src.key, status, result.error, 0,
                 latency_ms=latency, http=http_stats,
@@ -233,9 +242,6 @@ class Pipeline:
             )
             self.progress.source_done(src.key, src.name, status=status, new_items=0)
             return {"status": status, "new": 0, "error": result.error}
-
-        if result.cursor:
-            self.db.set_kv(f"cursor:{src.key}", result.cursor)
 
         new_count = self._store(src, result.items) if result.items else 0
         self._record_source_status(
