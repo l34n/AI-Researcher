@@ -127,7 +127,9 @@ PROMPT = """{title}
 (source: {source} · tier: {tier} · category: {category})
 heuristic prior: Q={q:.2f} P={p:.2f} F={f:.2f} U={u:.2f} readiness={r:.2f}
 
-Score 0.0-1.0. Be stingy: 0.8+ needs concrete evidence in the text.
+Score 0.0-1.0 using these anchors. 0.8+ needs concrete evidence in the text.
+Calibration: open weights or a pip-installable repo named in the text = practicality >= 0.8. Permissive license (Apache/MIT) and consumer-GPU size = feasibility >= 0.8. Funding, policy, opinion, or a digest with nothing to run = practicality <= 0.2.
+Verdict rule: adopt = you would install it this week; research = worth an afternoon spike; watch = interesting, nothing to run yet; skip = noise.
 "quality": specific, evidenced, primary — not a recap or listicle.
 "practicality": a practitioner can touch it (code, weights, API, dataset).
 "feasibility": realistic compute, license, skill. Closed 405B is low.
@@ -311,21 +313,23 @@ def blend(heuristic: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
         practicality=out["practicality"],
         feasibility=out["feasibility"],
     )
-    # One step is measured from the *heuristic* band, not from the already-
-    # blended scores. Blending 0.99 into a skip-band prior can land in
-    # research; allowing a further step to adopt is how a cheerful 7B
-    # used to mint "adopt" on a weekly digest.
+    # The blended scores decide the band. The model's verdict word may lift
+    # the band by one step, never lower it: small local models (llama3.1:8b,
+    # qwen3:32b, gemma3:27b) score an open-weights release at readiness
+    # 0.70 and still write "watch", and honouring the word over the numbers
+    # is why every local judge in the APE-703 sweep scored 0/3 on verdicts.
+    # The step is still measured from the *heuristic* band as well, not
+    # from the blended scores: blending 0.99 into a skip-band prior can
+    # land in research, and allowing a further step to adopt is how a
+    # cheerful 7B used to mint "adopt" on a weekly digest.
     prior_verdict = heuristic.get("verdict") if heuristic.get("verdict") in VERDICTS else computed
+    out["verdict"] = computed
     if (
         llm_verdict in VERDICTS
+        and VERDICTS.index(llm_verdict) == VERDICTS.index(computed) + 1
         and abs(VERDICTS.index(llm_verdict) - VERDICTS.index(prior_verdict)) <= 1
     ):
-        if llm_verdict == "adopt" and computed not in ("research", "adopt"):
-            out["verdict"] = computed
-        else:
-            out["verdict"] = llm_verdict
-    else:
-        out["verdict"] = computed
+        out["verdict"] = llm_verdict
     # Re-apply the adopt brakes after blending.
     if out["verdict"] == "adopt" and (
         out["practicality"] < ADOPT_PRACTICALITY or out["feasibility"] < ADOPT_FEASIBILITY

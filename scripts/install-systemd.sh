@@ -4,6 +4,17 @@
 # needs no root.
 set -euo pipefail
 
+# Headless shells (ssh without a login session, agent runners, cron) reach the
+# user bus only when these are set. Default them to the conventional runtime
+# dir so `systemctl --user` works everywhere a user bus actually exists.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+if [[ ! -S "$XDG_RUNTIME_DIR/bus" ]]; then
+  echo "error: no user bus at $XDG_RUNTIME_DIR/bus." >&2
+  echo "       log in once (or: sudo loginctl enable-linger $USER) and retry." >&2
+  exit 1
+fi
+
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 

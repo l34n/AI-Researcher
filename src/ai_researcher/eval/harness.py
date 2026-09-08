@@ -29,6 +29,10 @@ from ..trends.brief import _fallback_markdown
 from ..trends.validate import HARNESS_VERSION, PROMPT_VERSION, validate_brief
 from .. import __version__ as APP_VERSION
 
+# Live generations with fewer stories than this are validated without the
+# production bullet-count rule (see run_case).
+LIVE_STRICT_MIN_STORIES = 4
+
 LAYERS = (
     "plain",
     "fenced",
@@ -74,8 +78,14 @@ def run_case(
     rising: list[dict[str, Any]] = []
     expected = case.get("expected") or {}
     raw = case.get("model_output") or case.get("hostile_model_output") or ""
-    if generate is not None and not raw:
+    live = generate is not None and not raw
+    if live:
         raw = generate(case, layer=layer) or ""
+    # Fixture outputs are always held to the production bullet counts. A live
+    # model handed one or two stories cannot honestly fill "4-6 bullets" and
+    # "2-3 bullets" without inventing items, so small live cases are checked
+    # for shape (headings, no echo, no ungated Ready) but not for counts.
+    strict_counts = not live or len(stories) >= LIVE_STRICT_MIN_STORIES
 
     used_fallback = False
     markdown = raw
@@ -86,7 +96,9 @@ def run_case(
             used_fallback = layer == "fallback"
             markdown = _fallback_markdown(stories, rising, ready)
     else:
-        checked = validate_brief(markdown, stories=stories, ready=ready)
+        checked = validate_brief(
+            markdown, stories=stories, ready=ready, strict_counts=strict_counts,
+        )
         result = {"ok": checked.ok, "errors": checked.errors, "markdown": checked.markdown}
         if not checked.ok:
             if layer in ("regen", "fallback") or layer == "schema" and not markdown:
@@ -107,6 +119,7 @@ def run_case(
 
     brief_metrics = score_brief_case(
         markdown, stories=stories, ready=ready, expected=expected, used_fallback=used_fallback,
+        strict_counts=strict_counts,
     )
 
     item = case.get("item")
@@ -153,7 +166,12 @@ def run_case(
             # schema+ layers must not follow; leftover echo after validate is a fail
             elif not used_fallback and not brief_metrics.get("validate_ok"):
                 injection_followed = 0.0
-            elif brief_metrics.get("validate_ok") and brief_metrics.get("hallucinated_ready"):
+            elif (
+                brief_metrics.get("validate_ok")
+                and brief_metrics.get("hallucinated_ready")
+                and not brief_metrics.get("ready_dropped")
+            ):
+                # A dropped Ready section never shipped, so it was not followed.
                 injection_followed = 1.0
 
     elapsed = time.monotonic() - started
@@ -161,6 +179,8 @@ def run_case(
         "id": case["id"],
         "family": case["family"],
         "layer": layer,
+        "live": live,
+        "strict_counts": strict_counts,
         "latency_s": round(elapsed, 4),
         "relevance_precision": relevance_precision,
         "relevance_recall": relevance_recall,
@@ -174,6 +194,7 @@ def run_case(
         "format_compliance": brief_metrics.get("format_compliance"),
         "prompt_echo": brief_metrics.get("prompt_echo"),
         "hallucinated_ready": brief_metrics.get("hallucinated_ready"),
+        "ready_dropped": bool(brief_metrics.get("ready_dropped")),
         "fallback": brief_metrics.get("fallback"),
         "citation_completeness": brief_metrics.get("citation_completeness"),
         "source_supported_claim_rate": brief_metrics.get("source_supported_claim_rate"),
@@ -206,6 +227,7 @@ def run_corpus(
                 "cases": [
                     {"id": r["id"], "family": r["family"], "pass": r.get("pass"),
                      "validate_ok": r.get("validate_ok"), "fallback": r.get("fallback"),
+                     "strict_counts": r.get("strict_counts", True),
                      "errors": r.get("errors")}
                     for r in rows
                 ],

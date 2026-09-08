@@ -153,6 +153,11 @@ class OpenAICompatChat:
             return None
         message = (choices[0] or {}).get("message") or {}
         text = (message.get("content") or "").strip()
+        if not text and (choices[0] or {}).get("finish_reason") == "length":
+            # Reasoning models spend max_tokens on hidden thinking and return
+            # nothing; say so instead of silently handing back a fallback.
+            self.last_error = f"{model}: empty content, finish_reason=length (reasoning budget?)"
+            log.warning("OpenRouter generate returned no content: %s", self.last_error)
         return text or None
 
 
@@ -272,7 +277,39 @@ class ChatRouter:
             self._gemini = GeminiChat(self.settings, api_key=key) if key else None
         return self._gemini
 
-    def _pair(self, premium: bool) -> tuple[Any, str]:
+    def _role_override(self, role: str) -> str:
+        s = self.settings
+        return {
+            "enrich": s.ollama_enrich_model,
+            "judge": s.ollama_judge_model,
+            "research": s.ollama_research_model,
+            "brief": s.ollama_brief_model,
+        }.get(role, "") or ""
+
+    def _ollama_serves(self, tag: str) -> bool:
+        installed = set(getattr(self.ollama, "installed", []) or [])
+        return bool(tag) and (tag in installed or f"{tag}:latest" in installed)
+
+    def _pair(self, premium: bool, role: str = "") -> tuple[Any, str]:
+        """Return ``(backend, model)`` for this band and role.
+
+        A per-role override (``AIR_BRIEF_MODEL`` etc.) names a model, not a
+        backend. If that name is an installed Ollama tag it must go to Ollama
+        even when a cloud key is set; sending ``qwen3:32b`` to OpenRouter is a
+        400 and a silent fallback brief. A cloud slug in the override rides the
+        band's cloud backend as before.
+        """
+        backend, model = self._band_pair(premium)
+        override = self._role_override(role)
+        if not override:
+            return backend, model
+        if self._ollama_serves(override) and backend is not self.ollama:
+            return self.ollama, override
+        if backend is None and (getattr(self.ollama, "chat_model", "") or ""):
+            return self.ollama, override
+        return backend, override
+
+    def _band_pair(self, premium: bool) -> tuple[Any, str]:
         """Return ``(backend, model)`` for this quality band. Deterministic; no last-used state."""
         s = self.settings
         gemini = self._gemini_backend()
@@ -295,16 +332,7 @@ class ChatRouter:
         return None, ""
 
     def model_for(self, *, premium: bool = False, role: str = "") -> str:
-        s = self.settings
-        if role == "enrich" and s.ollama_enrich_model:
-            return s.ollama_enrich_model
-        if role == "judge" and s.ollama_judge_model:
-            return s.ollama_judge_model
-        if role == "research" and s.ollama_research_model:
-            return s.ollama_research_model
-        if role == "brief" and s.ollama_brief_model:
-            return s.ollama_brief_model
-        return self._pair(premium)[1]
+        return self._pair(premium, role)[1]
 
     @property
     def chat_model(self) -> str:
@@ -375,12 +403,16 @@ class ChatRouter:
         model: str | None = None,
         role: str = "",
     ) -> dict[str, Any] | None:
-        backend, use_model = self._pair(premium)
-        use_model = model or self.model_for(premium=premium, role=role) or use_model
+        backend, use_model = self._pair(premium, role)
+        use_model = model or use_model
         if backend is None or not use_model:
             return None
         async with self._gen_gate:
-            if not consume_daily_budget(
+            # The daily cap exists to bound cloud spend. Local Ollama calls
+            # cost nothing, and charging them meant an hourly ingest with
+            # enrich/judge/brief on Ollama burned the whole cap by evening and
+            # every later brief was the fallback (APE-703).
+            if backend is not self.ollama and not consume_daily_budget(
                 self.settings.data_dir, limit=int(self.settings.daily_model_calls or 0)
             ):
                 self.last_error = "daily model-call budget exhausted"
@@ -440,12 +472,16 @@ class ChatRouter:
         model: str | None = None,
         role: str = "",
     ) -> str | None:
-        backend, use_model = self._pair(premium)
-        use_model = model or self.model_for(premium=premium, role=role) or use_model
+        backend, use_model = self._pair(premium, role)
+        use_model = model or use_model
         if backend is None or not use_model:
             return None
         async with self._gen_gate:
-            if not consume_daily_budget(
+            # The daily cap exists to bound cloud spend. Local Ollama calls
+            # cost nothing, and charging them meant an hourly ingest with
+            # enrich/judge/brief on Ollama burned the whole cap by evening and
+            # every later brief was the fallback (APE-703).
+            if backend is not self.ollama and not consume_daily_budget(
                 self.settings.data_dir, limit=int(self.settings.daily_model_calls or 0)
             ):
                 self.last_error = "daily model-call budget exhausted"

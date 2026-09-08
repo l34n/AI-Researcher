@@ -187,6 +187,94 @@ chip, the firehose **Most ready** sort, and the daily brief's
 **Ready to build** section all read the same gate. A story that already
 has a brief links there as **week plan**.
 
+## Benchmark results
+
+**Executive summary (2026-09-04).** The daily brief, the readiness judge and the
+research wiki were benchmarked across 13 models: 5 paid OpenRouter, 5 free
+OpenRouter and 3 local Ollama tags on a shared 24 GB GPU. On the original
+prompt only `google/gemini-2.5-flash` produced usable output; every local
+model scored in the 30s and fell back to the templated brief in production.
+The gap was not model intelligence. Small models copy the prompt template
+(writing a `## Ready to build` section on days with nothing gated, leaving
+sections empty when asked for six bullets from one story) and say "watch"
+while scoring "research". Rendering the prompt from the data, letting the
+blended judge scores decide the verdict, one retry with the validator's
+findings, and repairing marker-less bullets instead of rejecting the brief
+moved nine of ten models into the Pass band. **For a local-only deployment,
+`gemma3:27b` (brief) with `llama3.1:8b` (enrich/judge) is now a production
+configuration; for cloud, `deepseek/deepseek-chat` matches gemini on every
+backtest metric at a fifth of the price.** Details:
+[docs/benchmarking.md](docs/benchmarking.md),
+[docs/benchmark-results.md](docs/benchmark-results.md),
+[docs/backtest-results.md](docs/backtest-results.md).
+
+Corpus v1.0.0 (21 cases; 3 are hostile fixtures every model fails by design,
+so 18/21 is the ceiling), prompt `brief-v5`, harness `validate-v2`, rubric
+v1.1, single attempt per case. Backtest: 5 historical dates, up to 8 stories
+each, production prompt. Whole sweep cost $0.03 in OpenRouter credit.
+
+| Rank | Model | Tier | Composite | Band | Format | Factuality | Judge verdict agreement | Cases valid | Backtest valid days | Backtest factuality | Wall (s) | Cost |
+|---:|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | `nvidia/nemotron-3-super-120b-a12b:free` | free | 71.6 | Pass | 0.86 | 0.79 | 1.00 | 18/21 | 5/5 | 1.00 | 102 | free |
+| 2 | `upstage/solar-pro4` | paid | 70.8 | Pass | 0.86 | 0.79 | 1.00 | 18/21 | 5/5 | 1.00 | 143 | $0.0024 |
+| 3 | `nvidia/nemotron-3.5-lightning:free` | free | 69.6 | Pass | 0.81 | 0.77 | 1.00 | 17/21 | 4/5 | 0.93 | 235 | free |
+| 4 | `qwen3:32b` | local | 69.5 | Pass | 0.76 | 0.75 | 1.00 | 16/21 | 3/5 | 0.87 | 278 | free |
+| 5 | `deepseek/deepseek-chat` | paid | 68.9 | Pass | 0.86 | 0.79 | 1.00 | 18/21 | 5/5 | 1.00 | 250 | $0.0035 |
+| 6 | `qwen/qwen3.7-flash` | paid | 67.7 | Pass | 0.86 | 0.75 | 1.00 | 18/21 | 4/5 | 0.93 | 98 | $0.0025 |
+| 7 | `gemma3:27b` | local | 66.7 | Pass | 0.86 | 0.79 | 0.67 | 18/21 | 5/5 | 0.96 | 283 | free |
+| 8 | `google/gemini-2.5-flash` | paid | 65.2 | Pass | 0.86 | 0.78 | 1.00 | 18/21 | 5/5 | 0.98 | 54 | $0.0172 |
+| 9 | `openai/gpt-4.1-nano` | paid | 64.8 | Marginal | 0.86 | 0.73 | 0.67 | 18/21 | 4/5 | 0.93 | 91 | $0.0037 |
+| 10 | `llama3.1:8b` | local | 61.3 | Marginal | 0.86 | 0.77 | 1.00 | 18/21 | 5/5 | 1.00 | 86 | free |
+
+Three free-tier models (`minimax/minimax-m2.7:free`, `google/gemma-4-31b-it:free`,
+`z-ai/glm-5.2:free`) rate-limited (HTTP 429) on most calls and are reported
+as INVALID rather than ranked; the free tier is not viable for a pipeline
+that makes ~250 model calls a day. Cost is the whole 26-call sweep per model.
+Wall time is not comparable across backends (OpenRouter includes network
+hops; Ollama runs on a shared LAN GPU). Composites drift a few points between
+runs from sampling; compare the validity counts across sweeps, not the
+composite.
+
+### Replicating the research
+
+```bash
+git clone https://github.com/mspicer/AI-Researcher-l34n && cd AI-Researcher-l34n
+uv venv && uv pip install -e ".[dev]"
+python -m pytest                              # offline, no GPU or keys needed
+
+export OPENROUTER_API_KEY=sk-or-...           # https://openrouter.ai/keys
+export OLLAMA_HOST=http://<your-ollama>:11434 # local tier; pull the tags in scripts/benchmark_matrix.yaml
+dates=2026-08-22,2026-08-26,2026-08-30,2026-09-01,2026-09-03   # or --dates auto
+
+# 1. Benchmark: 21-case corpus, full-fidelity (brief + judge + adapt turns), one model at a time or per tier
+python scripts/benchmark_models.py --profile paid  --out data/benchmark-results/paid
+python scripts/benchmark_models.py --profile free  --out data/benchmark-results/free
+for m in ollama-llama31-8b ollama-gemma3-27b ollama-qwen3-32b; do
+  python scripts/benchmark_models.py --model $m --out data/benchmark-results/local
+done
+
+# 2. Backtest: the production brief prompt over historical days from your own data/airesearch.db
+for tier in paid free local; do
+  python scripts/backtest_models.py --profile $tier --dates $dates --out data/backtest-results/$tier
+done
+
+# 3. Reports
+python scripts/benchmark_report.py --in data/benchmark-results/paid --in data/benchmark-results/free \
+  --in data/benchmark-results/local --out docs/benchmark-results.md
+python scripts/backtest_report.py --out docs/backtest-results.md
+
+# Re-apply the current rubric to existing result files without any model calls
+python scripts/benchmark_models.py --rescore --out data/benchmark-results/paid
+```
+
+Add or remove models by editing `scripts/benchmark_matrix.yaml` (no code
+change). Before a local run, confirm `curl $OLLAMA_HOST/api/ps` reports
+`size_vram == size` for the model, otherwise Ollama is spilling to CPU and
+the speed score is meaningless. Reasoning models need `reasoning: false`
+(the default) or they spend the whole token budget thinking and return
+empty content. The sweeps write under `data/benchmark-results/.runtime/` and
+never charge the live service's daily model budget.
+
 ## API access
 
 **Nothing is required.** Every core source is public and unauthenticated.

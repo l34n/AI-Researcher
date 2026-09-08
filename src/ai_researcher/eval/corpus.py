@@ -225,7 +225,9 @@ CASES: list[dict[str, Any]] = [
             "## Ready to build\n"
             "- **adopt** — Invented tool that was never gated\n"
         ),
-        "expected": {"validate_ok": False, "reject_ready": True, "fallback": True},
+        # The ungated section is dropped and the rest of the brief ships;
+        # ``reject_ready`` still requires the recommendation never to appear.
+        "expected": {"validate_ok": True, "reject_ready": True, "fallback": False},
     },
     {
         "id": "ready-valid-adopt",

@@ -212,7 +212,7 @@ class DeepResearcher:
             "llm": llm_pages,
             "fallback": fallback_pages,
             "candidates": len(candidates),
-            "model": self.client.model_for(premium=True) if llm_ready else "",
+            "model": self.client.model_for(premium=True, role="research") if llm_ready else "",
             "model_seconds": round(elapsed, 1),
         }
 
@@ -398,6 +398,7 @@ class DeepResearcher:
                     temperature=0.25,
                     timeout=max(240.0, float(self.client.settings.ollama_timeout)),
                     premium=True,
+                    role="research",
                 )
                 if text and len(text) > 80:
                     from ..trends.brief import _clean
@@ -405,7 +406,7 @@ class DeepResearcher:
                     markdown = _clean(text)
                     if markdown:
                         used_llm = True
-                        model_name = self.client.model_for(premium=True)
+                        model_name = self.client.model_for(premium=True, role="research")
             if not markdown:
                 markdown = render_page(turn["slug"], candidate, pages)
 

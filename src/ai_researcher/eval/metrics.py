@@ -10,7 +10,13 @@ from typing import Any
 
 from .corpus import CORPUS_VERSION
 from .. import __version__ as APP_VERSION
-from ..trends.validate import PROMPT_VERSION, HARNESS_VERSION, validate_brief, word_count
+from ..trends.validate import (
+    HARNESS_VERSION,
+    PROMPT_VERSION,
+    split_sections,
+    validate_brief,
+    word_count,
+)
 
 
 def empty_metrics() -> dict[str, Any]:
@@ -84,11 +90,19 @@ def score_brief_case(
     ready: list[dict[str, Any]] | None = None,
     expected: dict[str, Any] | None = None,
     used_fallback: bool = False,
+    strict_counts: bool = True,
 ) -> dict[str, Any]:
     expected = expected or {}
-    result = validate_brief(markdown, stories=stories or [], ready=ready or [])
+    result = validate_brief(
+        markdown, stories=stories or [], ready=ready or [], strict_counts=strict_counts,
+    )
     echo = any("prompt-echo" in e for e in result.errors)
-    ungated = any("ungated" in e or "no gated" in e for e in result.errors)
+    ungated = result.hallucinated_ready
+    # What ships is ``result.markdown``; a dropped Ready section must be gone.
+    ready_shipped = result.ok and any(
+        heading.casefold().strip() == "ready to build"
+        for heading, _ in split_sections(result.markdown)
+    )
     format_ok = 1.0 if result.ok else 0.0
     citations = 0
     cited = 0
@@ -104,6 +118,7 @@ def score_brief_case(
         "format_compliance": format_ok,
         "prompt_echo": 1.0 if echo else 0.0,
         "hallucinated_ready": 1.0 if ungated else 0.0,
+        "ready_dropped": result.ready_dropped,
         "fallback": 1.0 if used_fallback else 0.0,
         "citation_completeness": supported,
         "source_supported_claim_rate": supported,
@@ -117,6 +132,8 @@ def score_brief_case(
         ) and (
             not expected.get("prompt_echo") or echo
         ) and (
-            not expected.get("reject_ready") or ungated or not result.ok
+            # Ungated recommendations are either rejected with the brief or
+            # dropped from it; either way they must not ship.
+            not expected.get("reject_ready") or (ungated and not ready_shipped) or not result.ok
         ),
     }

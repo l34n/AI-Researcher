@@ -140,7 +140,7 @@ class Pipeline:
         registry = build_registry(self.settings, fetcher)
         try:
             results = await asyncio.gather(
-                *(self._ingest_source(src, registry) for src in targets),
+                *(self._ingest_source(src, registry, fetcher) for src in targets),
                 return_exceptions=True,
             )
         finally:
@@ -177,7 +177,7 @@ class Pipeline:
             stats["coverage"] = "partial"
         return stats
 
-    async def _ingest_source(self, src: Source, registry) -> dict[str, Any]:
+    async def _ingest_source(self, src: Source, registry, fetcher) -> dict[str, Any]:
         self.progress.source_start(src.key, src.name)
         connector = registry.get(src.kind)
         if connector is None:

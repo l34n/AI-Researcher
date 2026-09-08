@@ -126,7 +126,8 @@ def cmd_serve(args) -> int:
         if lan:
             print(f"  on LAN    : http://{lan}:{port}")
     if settings.access_token:
-        print(f"  token     : append ?k={settings.access_token}")
+        # Never echo the secret: under systemd this banner lands in the journal.
+        print("  token     : required — append ?k=<AIR_ACCESS_TOKEN from .env>")
     uvicorn.run(
         "ai_researcher.web.app:create_app",
         host=host, port=port, factory=True,

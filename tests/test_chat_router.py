@@ -391,3 +391,64 @@ class TestOpenRouterEmpty:
         asyncio.run(http.aclose())
         assert text is None
         assert backend.last_error == "empty OpenRouter response"
+
+
+class TestRoleOverrideBackend:
+    """A role override names a model; the backend follows the model."""
+
+    def test_installed_ollama_tag_stays_on_ollama_when_a_cloud_key_is_set(self, tmp_path):
+        ollama = FakeOllama()
+        openrouter = RecBackend("openrouter")
+        router = ChatRouter(
+            _settings(openrouter_api_key="o", ollama_brief_model="qwen3:4b",
+                      ollama_judge_model="qwen3:4b", data_dir=tmp_path),
+            ollama=ollama,
+            openrouter=openrouter,
+        )
+        asyncio.run(router.probe())
+        assert router.model_for(premium=True, role="brief") == "qwen3:4b"
+        asyncio.run(router.generate_text("brief me", premium=True, role="brief"))
+        asyncio.run(router.generate_json("judge me", premium=False, role="judge"))
+        assert openrouter.calls == []
+        assert ollama.text_calls[0]["model"] == "qwen3:4b"
+        assert ollama.json_calls[0]["model"] == "qwen3:4b"
+        # Roles without an override still ride the cloud band.
+        asyncio.run(router.generate_text("research", premium=True, role="research"))
+        assert openrouter.calls[0]["model"] == "anthropic/claude-sonnet-4"
+
+    def test_cloud_slug_override_rides_the_cloud_backend(self, tmp_path):
+        ollama = FakeOllama()
+        openrouter = RecBackend("openrouter")
+        router = ChatRouter(
+            _settings(openrouter_api_key="o", ollama_brief_model="qwen/qwen3.7-flash",
+                      data_dir=tmp_path),
+            ollama=ollama,
+            openrouter=openrouter,
+        )
+        asyncio.run(router.probe())
+        asyncio.run(router.generate_text("brief me", premium=True, role="brief"))
+        assert ollama.text_calls == []
+        assert openrouter.calls[0]["model"] == "qwen/qwen3.7-flash"
+
+
+class TestDailyBudgetIsCloudOnly:
+    def test_ollama_calls_are_not_charged_and_still_run_when_cap_is_hit(self, tmp_path):
+        from ai_researcher.enrich.chat import consume_daily_budget
+
+        ollama = FakeOllama()
+        router = ChatRouter(_settings(data_dir=tmp_path, daily_model_calls=1), ollama=ollama)
+        asyncio.run(router.probe())
+        assert consume_daily_budget(tmp_path, limit=1) is True   # cap now reached
+        assert asyncio.run(router.generate_text("hi")) == "ollama-text"
+        assert asyncio.run(router.generate_json("hi"))["from"] == "ollama"
+        assert consume_daily_budget(tmp_path, limit=1) is False  # counter untouched by Ollama calls
+
+    def test_cloud_calls_are_still_capped(self, tmp_path):
+        openrouter = RecBackend("openrouter")
+        router = ChatRouter(_settings(openrouter_api_key="o", data_dir=tmp_path, daily_model_calls=1),
+                            ollama=FakeOllama(), openrouter=openrouter)
+        asyncio.run(router.probe())
+        assert asyncio.run(router.generate_text("one", premium=True)) == "openrouter-text"
+        assert asyncio.run(router.generate_text("two", premium=True)) is None
+        assert router.last_error == "daily model-call budget exhausted"
+        assert len(openrouter.calls) == 1

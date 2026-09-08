@@ -1,7 +1,12 @@
 # ── secrets and local state ──────────────────────────────────────
 # .env holds API tokens. It is never committed; copy .env.example instead.
+# Profile variants (.env.ollama, .env.openrouter, …) also carry live keys
+# — see scripts/switch-provider.sh (APE-708).
 .env
 .env.local
+.env.ollama
+.env.openrouter
+.env.*.bak
 *.env.bak
 
 # The SQLite database, embeddings, and the ingest lock. All regenerable —
@@ -33,3 +38,4 @@ Thumbs.db
 # ── agent tooling ────────────────────────────────────────────────
 # Per-machine tool permissions, not project configuration.
 .claude/settings.local.json
+serve.log

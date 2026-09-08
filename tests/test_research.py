@@ -227,6 +227,23 @@ class TestPremiumWiki:
         assert "pivotal" not in adapt.lower()
         assert db.scalar("SELECT model FROM research") == "stub:premium"
 
+    def test_every_turn_is_tagged_with_the_research_role(self, db):
+        """``AIR_RESEARCH_MODEL`` is only honoured when the call names its role.
+
+        Without ``role="research"`` the router falls back to the premium band's
+        cloud model and the per-role override is silently ignored.
+        """
+        add_ready_item(db)
+        settings = Settings()
+        settings.research_budget = 1
+        client = _RoleChat()
+        result = asyncio.run(DeepResearcher(settings, db, client).run(limit=1))
+        assert result["llm"] == 1
+        assert client.text_kwargs
+        assert all(kw.get("role") == "research" for kw in client.text_kwargs)
+        assert result["model"] == "stub:research"
+        assert db.scalar("SELECT model FROM research") == "stub:research"
+
 
 class _PremiumChat:
     available = True
@@ -250,6 +267,15 @@ class _PremiumChat:
         )
 
     def model_for(self, *, premium=False, role=""):
+        return "stub:premium" if premium else self.chat_model
+
+
+class _RoleChat(_PremiumChat):
+    """Premium stub whose model name reveals which role the caller asked for."""
+
+    def model_for(self, *, premium=False, role=""):
+        if premium and role:
+            return f"stub:{role}"
         return "stub:premium" if premium else self.chat_model
 
 

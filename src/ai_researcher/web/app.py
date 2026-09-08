@@ -310,7 +310,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.scalar("SELECT 1", default=0)
             ok, msg = True, "ok"
             try:
-                row = db.one("PRAGMA integrity_check(1)")
+                # Check on a fresh connection. The hourly ingest runs in
+                # another process and rewrites the FTS5 index; the serving
+                # connection then reports "malformed inverted index" from its
+                # cached FTS structure while search keeps working and every
+                # new connection reports ok. That false 503 recurred twice.
+                import sqlite3
+
+                probe = sqlite3.connect(f"file:{db.path}?mode=ro", uri=True)
+                try:
+                    row = probe.execute("PRAGMA integrity_check(1)").fetchone()
+                finally:
+                    probe.close()
                 msg = row[0] if row else "ok"
                 ok = str(msg) == "ok"
             except Exception as exc:  # noqa: BLE001
