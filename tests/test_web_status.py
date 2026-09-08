@@ -321,3 +321,26 @@ class TestHealthz:
             assert c.get("/healthz").status_code == 200
             assert c.get("/").status_code == 401
             assert c.get("/api/status").status_code == 401
+
+    def test_browser_without_token_gets_a_prompt_not_a_dead_page(self, tmp_path, monkeypatch):
+        data = tmp_path / "data"
+        data.mkdir()
+        monkeypatch.setenv("AIR_DATA_DIR", str(data))
+        monkeypatch.setenv("AIR_AUTO_REFRESH_MIN", "0")
+        settings = Settings(
+            data_dir=data,
+            access_token="secret-token",
+            sources_path=Path(__file__).resolve().parents[1] / "config" / "sources.yaml",
+        )
+        app = create_app(settings)
+        with TestClient(app) as c:
+            r = c.get("/", headers={"accept": "text/html,*/*"})
+            assert r.status_code == 401
+            assert 'name="k"' in r.text and "AI Researcher is running" in r.text
+            # Non-browser callers keep the terse 401.
+            assert 'name="k"' not in c.get("/api/status", headers={"accept": "application/json"}).text
+            # Submitting the form (a GET with ?k=) opens the app and sets the cookie.
+            ok = c.get("/", params={"k": "secret-token"}, headers={"accept": "text/html"})
+            assert ok.status_code == 200
+            assert c.cookies.get("air_token") == "secret-token"
+            assert c.get("/", headers={"accept": "text/html"}).status_code == 200

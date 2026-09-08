@@ -55,6 +55,24 @@ class RunState:
         }
 
 
+_TOKEN_PROMPT = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>AI Researcher · access token</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body{font:16px/1.5 system-ui,sans-serif;background:#0f1115;color:#e6e6e6;display:grid;place-items:center;min-height:100vh;margin:0}
+form{background:#171a21;border:1px solid #2a2f3a;border-radius:12px;padding:28px 32px;max-width:420px}
+h1{font-size:20px;margin:0 0 8px}p{margin:0 0 16px;color:#aab}code{color:#9cf}
+input{width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #3a4150;background:#0f1115;color:#fff;font-size:16px}
+button{margin-top:12px;width:100%;padding:10px;border:0;border-radius:8px;background:#3b82f6;color:#fff;font-size:16px;cursor:pointer}
+</style></head><body>
+<form method="get" action="/">
+<h1>AI Researcher is running</h1>
+<p>This dashboard is protected by an access token (<code>AIR_ACCESS_TOKEN</code> in the server's <code>.env</code>). Enter it once; it is remembered in a cookie for 90 days.</p>
+<input name="k" type="password" placeholder="Access token" autofocus autocomplete="current-password">
+<button type="submit">Open dashboard</button>
+</form></body></html>"""
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.load()
     db = Database(settings.db_path)
@@ -121,6 +139,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or request.cookies.get("air_token")
             )
             if supplied != settings.access_token:
+                if request.method == "GET" and "text/html" in (request.headers.get("accept") or ""):
+                    # A browser landed here without the token. Show a prompt
+                    # instead of a bare 401 that reads as "the site is down";
+                    # the form reuses the ?k= handling and cookie below.
+                    return HTMLResponse(_TOKEN_PROMPT, status_code=401)
                 return HTMLResponse(
                     "<h1>401</h1><p>Append <code>?k=YOUR_TOKEN</code> to the URL.</p>",
                     status_code=401,
