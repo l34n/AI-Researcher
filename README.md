@@ -9,11 +9,13 @@ acquisitions, tooling, and policy — collected from ~60 sources, clustered into
 stories, ranked, and summarised by a local model. Runs entirely on your machine
 and is reachable from anywhere on your LAN.
 
-No API keys are required, nothing is sent to a third party, and the summariser
-is a local Ollama model. Every optional piece degrades to a working fallback.
+No API keys are required. Local Ollama is the default. Optional Gemini and
+OpenRouter keys, when set, take the chat load; embeddings stay local. Every
+optional piece degrades to a working fallback.
 
 ![The dashboard](docs/screenshot.png)
-![The dashboard](docs/firehose.png)
+![Firehose sorted by readiness](docs/firehose.png)
+![Adapt brief](docs/adapt.png)
 ![The dashboard](docs/search.png)
 ![The dashboard](docs/saved.png)
 ![The dashboard](docs/sources.png)
@@ -36,6 +38,53 @@ Then install it as a background service:
 
 That runs the dashboard continuously and ingests once an hour.
 
+## Docker
+
+One container serves the dashboard. Ingest can run in-process (default, every
+60 minutes) or in a sibling worker that shares the `/data` volume. SQLite lives
+in that volume, so rebuilds keep your history.
+
+```bash
+cp .env.example .env          # optional: GitHub token, Gemini/OpenRouter keys
+docker compose up -d --build
+```
+
+Then open http://localhost:8899
+
+```bash
+docker compose logs -f ai-researcher
+docker compose exec ai-researcher ai-researcher doctor
+docker compose exec ai-researcher ai-researcher run     # ingest now, don't wait
+docker compose exec ai-researcher ai-researcher backup
+```
+
+**Ollama.** The default `OLLAMA_HOST` is `http://host.docker.internal:11434`,
+so a Compose stack on Linux/macOS/Windows talks to Ollama on the host. Auto-pick
+prefers `gemma3:4b` and will not load a 30B tag just because it is installed.
+To run Ollama in Compose as well:
+
+```bash
+OLLAMA_HOST=http://ollama:11434 docker compose --profile ollama up -d --build
+```
+
+**Split dashboard and worker** (avoids colliding a manual `run` with the
+in-process timer):
+
+```bash
+AIR_AUTO_REFRESH_MIN=0 docker compose --profile worker up -d --build
+```
+
+**No GPU / cloud-only.** Set `GEMINI_API_KEY` or `OPENROUTER_API_KEY` in `.env`
+and skip Ollama. Clustering falls back to hashed TF-IDF; the dashboard still
+works.
+
+`AIR_AUTO_REFRESH_MIN` defaults to 60 in Compose (systemd users leave it at 0
+so the timer is the only scheduler). Set `AIR_ACCESS_TOKEN` if the port will
+be reachable beyond a trusted LAN. `/healthz` is liveness, `/readyz` checks
+the database, `/health` reports source and model status. The image is a
+regular (non-editable) install; bind-mount `/app/config/sources.yaml` to
+override the catalog.
+
 ## How it works
 
 ```
@@ -47,13 +96,21 @@ That runs the dashboard continuously and ingests once an hour.
                                             (top N only)   (cosine +     (ranked)
                                                             entity guard)      │
                                                                                ▼
-                                                                         daily brief
+                                              judgment ──▶ readiness gate ──▶ daily brief
+                                         (quality / practicality /              │
+                                          feasibility / usefulness)              │
+                                                                               ▼
+                                                              Karpathy wiki (top N)
+                                                         ingest → claims → critique
+                                                              → adapt → lint
 ```
 
 **Ingest.** Ten connector kinds — RSS/Atom, Reddit, Hacker News, arXiv, HF
 daily papers, HF trending models, GitHub releases, GitHub new-and-hot repos,
-Google News (for vendors that publish no feed), and X. Each source's health is
-tracked; a broken feed is skipped, never fatal.
+Google News (for vendors that publish no feed), and X. When a feed only
+gives a title or a teaser, ingest GETs the linked page (capped per source)
+and stores the stripped article text for the in-app reader. Each source's
+health is tracked; a broken feed is skipped, never fatal.
 
 **Deduplication.** URLs are canonicalised (tracking params stripped, AMP
 suffixes removed, host normalised) so the same story arriving from six places
@@ -77,19 +134,26 @@ resource here:
    actually appear on the page — bounded by a count *and* a wall-clock budget.
 
 Set `AIR_ENRICH_BUDGET` / `AIR_ENRICH_TIME_BUDGET` to match your hardware.
+Deep research is bounded separately by `AIR_RESEARCH_BUDGET` /
+`AIR_RESEARCH_TIME_BUDGET` / `AIR_RESEARCH_THRESHOLD`.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `ai-researcher run` | Full cycle: fetch → enrich → cluster → brief |
+| `ai-researcher run` | Full cycle: fetch → enrich → cluster → judge → research → brief |
 | `ai-researcher run --no-ingest` | Re-analyse what's stored, no fetching |
 | `ai-researcher run --source simonw` | Limit to one source (repeatable) |
 | `ai-researcher serve` | Web dashboard |
+| `ai-researcher worker` | Interval ingest loop (Compose `--profile worker`) |
 | `ai-researcher doctor` | Diagnose everything that silently degrades |
 | `ai-researcher sources` | Per-source health table |
 | `ai-researcher brief` | Print / regenerate today's brief |
+| `ai-researcher research` | Re-judge and write deep-research briefs |
 | `ai-researcher recluster` | Rebuild stories and topic history |
+| `ai-researcher eval` | Offline quality corpus (no network, no GPU) |
+| `ai-researcher compare --models a b` | Score two models against the corpus |
+| `ai-researcher backup` / `restore` | SQLite backup API + integrity check |
 | `ai-researcher stats` | Counters as JSON |
 
 **`doctor` first** whenever something looks wrong — it reports the model in use,
@@ -97,7 +161,121 @@ whether embeddings are available, which credentials are missing, and where
 content is stuck.
 
 Dashboard shortcuts: `d` dashboard · `f` firehose · `s` search · `b` saved ·
-`h` sources · `r` runs · `/` focus search.
+`a` adapt · `h` sources · `r` runs · `/` focus search.
+
+## Quality gate and Karpathy research
+
+Attention (corroboration, engagement, recency) is the wrong axis for "should I
+try this". After clustering, every item is scored on four practitioner
+questions — **quality**, **practicality**, **feasibility**, **usefulness** —
+first by rules, then by the model for the highest-readiness slice.
+
+The composite `readiness` gates a five-turn wiki, following Karpathy's
+raw-sources / wiki / schema pattern:
+
+1. **Ingest** — immutable facts, artifacts, claims as stated
+2. **Claims** — demonstrated vs asserted, missing evidence
+3. **Critique** — the four scores in prose, plus contradictions
+4. **Adapt** — who it's for, prerequisites, first-week experiment, risks, done-looks-like
+5. **Lint** — contradictions, orphans, unknowns; the last word on the verdict
+
+Only stories at or above `AIR_RESEARCH_THRESHOLD` (default 0.62) with a
+`research` or `adopt` verdict spend a slot. The budget is small on purpose:
+five model calls per story. With no model the same pages are filed as a
+structured digest so the Adapt tab is never blank.
+
+Open `/adapt` (or press `a`) for the week plans. The dashboard **Ready**
+chip, the firehose **Most ready** sort, and the daily brief's
+**Ready to build** section all read the same gate. A story that already
+has a brief links there as **week plan**.
+
+## Benchmark results
+
+**Executive summary (2026-09-04).** The daily brief, the readiness judge and the
+research wiki were benchmarked across 13 models: 5 paid OpenRouter, 5 free
+OpenRouter and 3 local Ollama tags on a shared 24 GB GPU. On the original
+prompt only `google/gemini-2.5-flash` produced usable output; every local
+model scored in the 30s and fell back to the templated brief in production.
+The gap was not model intelligence. Small models copy the prompt template
+(writing a `## Ready to build` section on days with nothing gated, leaving
+sections empty when asked for six bullets from one story) and say "watch"
+while scoring "research". Rendering the prompt from the data, letting the
+blended judge scores decide the verdict, one retry with the validator's
+findings, and repairing marker-less bullets instead of rejecting the brief
+moved nine of ten models into the Pass band. **For a local-only deployment,
+`gemma3:27b` (brief) with `llama3.1:8b` (enrich/judge) is now a production
+configuration; for cloud, `deepseek/deepseek-chat` matches gemini on every
+backtest metric at a fifth of the price.** Details:
+[docs/benchmarking.md](docs/benchmarking.md),
+[docs/benchmark-results.md](docs/benchmark-results.md),
+[docs/backtest-results.md](docs/backtest-results.md).
+
+Corpus v1.0.0 (21 cases; 3 are hostile fixtures every model fails by design,
+so 18/21 is the ceiling), prompt `brief-v5`, harness `validate-v2`, rubric
+v1.1, single attempt per case. Backtest: 5 historical dates, up to 8 stories
+each, production prompt. Whole sweep cost $0.03 in OpenRouter credit.
+
+| Rank | Model | Tier | Composite | Band | Format | Factuality | Judge verdict agreement | Cases valid | Backtest valid days | Backtest factuality | Wall (s) | Cost |
+|---:|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | `nvidia/nemotron-3-super-120b-a12b:free` | free | 71.6 | Pass | 0.86 | 0.79 | 1.00 | 18/21 | 5/5 | 1.00 | 102 | free |
+| 2 | `upstage/solar-pro4` | paid | 70.8 | Pass | 0.86 | 0.79 | 1.00 | 18/21 | 5/5 | 1.00 | 143 | $0.0024 |
+| 3 | `nvidia/nemotron-3.5-lightning:free` | free | 69.6 | Pass | 0.81 | 0.77 | 1.00 | 17/21 | 4/5 | 0.93 | 235 | free |
+| 4 | `qwen3:32b` | local | 69.5 | Pass | 0.76 | 0.75 | 1.00 | 16/21 | 3/5 | 0.87 | 278 | free |
+| 5 | `deepseek/deepseek-chat` | paid | 68.9 | Pass | 0.86 | 0.79 | 1.00 | 18/21 | 5/5 | 1.00 | 250 | $0.0035 |
+| 6 | `qwen/qwen3.7-flash` | paid | 67.7 | Pass | 0.86 | 0.75 | 1.00 | 18/21 | 4/5 | 0.93 | 98 | $0.0025 |
+| 7 | `gemma3:27b` | local | 66.7 | Pass | 0.86 | 0.79 | 0.67 | 18/21 | 5/5 | 0.96 | 283 | free |
+| 8 | `google/gemini-2.5-flash` | paid | 65.2 | Pass | 0.86 | 0.78 | 1.00 | 18/21 | 5/5 | 0.98 | 54 | $0.0172 |
+| 9 | `openai/gpt-4.1-nano` | paid | 64.8 | Marginal | 0.86 | 0.73 | 0.67 | 18/21 | 4/5 | 0.93 | 91 | $0.0037 |
+| 10 | `llama3.1:8b` | local | 61.3 | Marginal | 0.86 | 0.77 | 1.00 | 18/21 | 5/5 | 1.00 | 86 | free |
+
+Three free-tier models (`minimax/minimax-m2.7:free`, `google/gemma-4-31b-it:free`,
+`z-ai/glm-5.2:free`) rate-limited (HTTP 429) on most calls and are reported
+as INVALID rather than ranked; the free tier is not viable for a pipeline
+that makes ~250 model calls a day. Cost is the whole 26-call sweep per model.
+Wall time is not comparable across backends (OpenRouter includes network
+hops; Ollama runs on a shared LAN GPU). Composites drift a few points between
+runs from sampling; compare the validity counts across sweeps, not the
+composite.
+
+### Replicating the research
+
+```bash
+git clone https://github.com/mspicer/AI-Researcher-l34n && cd AI-Researcher-l34n
+uv venv && uv pip install -e ".[dev]"
+python -m pytest                              # offline, no GPU or keys needed
+
+export OPENROUTER_API_KEY=sk-or-...           # https://openrouter.ai/keys
+export OLLAMA_HOST=http://<your-ollama>:11434 # local tier; pull the tags in scripts/benchmark_matrix.yaml
+dates=2026-08-22,2026-08-26,2026-08-30,2026-09-01,2026-09-03   # or --dates auto
+
+# 1. Benchmark: 21-case corpus, full-fidelity (brief + judge + adapt turns), one model at a time or per tier
+python scripts/benchmark_models.py --profile paid  --out data/benchmark-results/paid
+python scripts/benchmark_models.py --profile free  --out data/benchmark-results/free
+for m in ollama-llama31-8b ollama-gemma3-27b ollama-qwen3-32b; do
+  python scripts/benchmark_models.py --model $m --out data/benchmark-results/local
+done
+
+# 2. Backtest: the production brief prompt over historical days from your own data/airesearch.db
+for tier in paid free local; do
+  python scripts/backtest_models.py --profile $tier --dates $dates --out data/backtest-results/$tier
+done
+
+# 3. Reports
+python scripts/benchmark_report.py --in data/benchmark-results/paid --in data/benchmark-results/free \
+  --in data/benchmark-results/local --out docs/benchmark-results.md
+python scripts/backtest_report.py --out docs/backtest-results.md
+
+# Re-apply the current rubric to existing result files without any model calls
+python scripts/benchmark_models.py --rescore --out data/benchmark-results/paid
+```
+
+Add or remove models by editing `scripts/benchmark_matrix.yaml` (no code
+change). Before a local run, confirm `curl $OLLAMA_HOST/api/ps` reports
+`size_vram == size` for the model, otherwise Ollama is spilling to CPU and
+the speed score is meaningless. Reasoning models need `reasoning: false`
+(the default) or they spend the whole token budget thinking and return
+empty content. The sweeps write under `data/benchmark-results/.runtime/` and
+never charge the live service's daily model budget.
 
 ## API access
 
@@ -133,8 +311,10 @@ path automatically.
 
 ## Local model notes
 
-Enrichment and the brief use Ollama. Both degrade gracefully: no model means
-heuristic classification and a templated brief, and the dashboard still works.
+Enrichment and the brief use the workhorse chat backend (Ollama by default,
+Gemini Flash or cheap OpenRouter when a key is set). Both degrade gracefully:
+no model means heuristic classification and a templated brief, and the
+dashboard still works.
 
 Two things dominate throughput on a small GPU:
 
@@ -149,13 +329,32 @@ Two things dominate throughput on a small GPU:
 Recommended pulls:
 
 ```bash
-ollama pull qwen3:4b            # chat: fits a 6 GiB card comfortably
+ollama pull gemma3:4b           # default chat: fits a 6 GiB card
 ollama pull nomic-embed-text    # embeddings: much better clustering, 274 MB
 ```
 
 Pin them in `.env` (`OLLAMA_CHAT_MODEL`, `OLLAMA_EMBED_MODEL`) rather than
 relying on auto-detect, so an unrelated `ollama pull` can't silently change
 which model your dashboard uses.
+
+### Optional cloud chat (Gemini, OpenRouter)
+
+Local Ollama stays the default. Set `GEMINI_API_KEY` and/or `OPENROUTER_API_KEY`
+to shift chat off the GPU. Embeddings never leave Ollama (or TF-IDF).
+
+Routing is quality-gated so the cheap model does bulk work and the expensive
+one only sees content that already looks worth it:
+
+| Band | Used for | Default |
+|---|---|---|
+| **Workhorse** | Enrichment summaries, judgment below the readiness gate | Gemini 2.5 Flash, else cheap OpenRouter, else Ollama |
+| **Premium** | Deep-research wiki, daily brief, judgment at `AIR_PREMIUM_READINESS` (0.62) | OpenRouter Claude Sonnet, else Gemini 2.5 Pro, else the workhorse |
+
+Pin the model ids in `.env`. Generated Markdown is passed through an unslop
+filter (no em dashes, chatbot openers, or the usual AI vocabulary) so a flash
+model cannot dump filler into the Adapt tab.
+
+`ai-researcher doctor` prints which backend is the workhorse and which is premium.
 
 Check `nvidia-smi` works. If it reports a driver/library version mismatch, the
 kernel module and userspace libraries have drifted — usually after a driver
@@ -218,7 +417,11 @@ clustering thresholds.
 
 Everything lives in `data/airesearch.db` (SQLite, WAL). Items older than
 `AIR_RETENTION_DAYS` (120) are pruned automatically — except anything you've
-starred, which is kept indefinitely. Back it up by copying the file.
+starred **or that has a research brief**, which is kept indefinitely.
+`ai-researcher backup` copies the database via SQLite's backup API and
+integrity-checks the copy; `ai-researcher restore --yes backup.db` replaces
+the live file. Do not copy a live WAL database with `cp` while ingest is
+running.
 
 ## Contributing
 

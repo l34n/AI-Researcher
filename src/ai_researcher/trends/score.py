@@ -107,3 +107,40 @@ def score_cluster(group: list[dict], *, now: datetime | None = None) -> float:
         default=None,
     )
     return base * corroboration * importance_floor * (0.55 + 0.45 * _recency(freshest, now))
+
+
+def explain_cluster(group: list[dict], *, now: datetime | None = None) -> str:
+    """One-line ranking explanation shown on story cards."""
+    now = now or utcnow()
+    if not group:
+        return "no items"
+    distinct = len({it.get("source_key") for it in group})
+    tiers = sorted({it.get("tier") or "news" for it in group})
+    peak = max(float(it.get("importance") or 0.5) for it in group)
+    freshest = max(
+        (parse_datetime(it.get("published_at") or it.get("fetched_at")) for it in group),
+        key=lambda d: d or datetime.min.replace(tzinfo=now.tzinfo),
+        default=None,
+    )
+    age = ""
+    if freshest:
+        hours = max((now - freshest).total_seconds() / 3600.0, 0.0)
+        if hours < 6:
+            age = "very recent"
+        elif hours < 24:
+            age = "today"
+        elif hours < 72:
+            age = "this week"
+        else:
+            age = "aging"
+    bits = [f"{distinct} source{'s' if distinct != 1 else ''}"]
+    if len(tiers) > 1:
+        bits.append(f"tiers {', '.join(tiers[:3])}")
+    if peak >= 0.7:
+        bits.append("high importance")
+    if age:
+        bits.append(age)
+    ready = max((float(it.get("readiness") or 0) for it in group), default=0)
+    if ready >= 0.62:
+        bits.append("practitioner-ready")
+    return " · ".join(bits)

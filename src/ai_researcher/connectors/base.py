@@ -28,6 +28,7 @@ class RawItem:
     def normalized(self) -> "RawItem":
         self.title = strip_html(self.title, 400) or self.title.strip()
         self.body = strip_html(self.body, 4000)
+        self.author = strip_html(self.author, 80)
         self.url = canonical_url(self.url)
         return self
 

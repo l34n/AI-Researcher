@@ -15,6 +15,7 @@ from .util import domain_of
 log = logging.getLogger("ai_researcher.http")
 
 RETRY_STATUS = {408, 425, 429, 500, 502, 503, 504}
+PERMANENT_STATUS = {400, 401, 403, 404, 405, 410, 422}
 
 
 class Fetcher:
@@ -45,6 +46,7 @@ class Fetcher:
         self._host_gates: dict[str, asyncio.Semaphore] = defaultdict(
             lambda: asyncio.Semaphore(max(1, per_host))
         )
+        self.events: list[dict[str, Any]] = []
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -57,7 +59,12 @@ class Fetcher:
         params: dict[str, Any] | None = None,
         attempts: int = 3,
     ) -> httpx.Response | None:
-        """GET with backoff. Returns None when every attempt failed."""
+        """GET with backoff. Returns None when every attempt failed.
+
+        Permanent failures (401/403/404/410) are not retried. 429 honours
+        Retry-After. Transient 5xx and timeouts use bounded exponential
+        backoff with jitter.
+        """
         host = domain_of(url) or url
         last_exc: Exception | None = None
         for attempt in range(attempts):
@@ -67,7 +74,21 @@ class Fetcher:
             except (httpx.HTTPError, asyncio.TimeoutError) as exc:
                 last_exc = exc
                 log.debug("GET %s failed (%s/%s): %s", url, attempt + 1, attempts, exc)
+                self.events.append({
+                    "url": url, "host": host, "status": 0,
+                    "error": type(exc).__name__, "attempt": attempt + 1,
+                    "timeout": True,
+                })
             else:
+                self.events.append({
+                    "url": url, "host": host, "status": resp.status_code,
+                    "error": "", "attempt": attempt + 1,
+                    "bytes": len(resp.content or b""),
+                    "timeout": False,
+                    "retry_after": resp.headers.get("Retry-After", ""),
+                })
+                if resp.status_code in PERMANENT_STATUS:
+                    return resp
                 if resp.status_code in RETRY_STATUS and attempt < attempts - 1:
                     delay = self._retry_delay(resp, attempt)
                     log.debug("GET %s -> %s, retrying in %.1fs", url, resp.status_code, delay)
@@ -122,7 +143,9 @@ class Fetcher:
         retry_after = resp.headers.get("Retry-After")
         if retry_after:
             try:
-                return min(float(retry_after), 30.0)
+                return min(float(retry_after), 90.0)
             except ValueError:
                 pass
-        return min(1.5 * (2**attempt) + random.uniform(0, 0.75), 30.0)
+        # Full jitter: pick uniformly in [0, cap] so concurrent clients spread.
+        cap = min(1.5 * (2**attempt), 30.0)
+        return random.uniform(0, cap)

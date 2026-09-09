@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge, verdict_pill, meters, artifact_pills %}
+{% block title %}AI Researcher — Adapt{% endblock %}
+
+{% block content %}
+<section class="panel">
+  <h3>
+    <span>Implementation briefs</span>
+    <span>quality-gated · do this week</span>
+  </h3>
+  <div class="body">
+    <p style="margin:0 0 12px;color:var(--text-mid);font-size:14px">
+      Stories that are specific, practical, and feasible get a week plan:
+      who it's for, the first experiment, and what done looks like.
+      Open a brief and start with <strong>Adapt</strong>.
+    </p>
+    <div class="chips">
+      <a class="chip {{ 'on' if not active_verdict }}" href="/adapt">All</a>
+      <a class="chip {{ 'on' if active_verdict=='adopt' }}" href="/adapt?verdict=adopt">Adopt</a>
+      <a class="chip {{ 'on' if active_verdict=='research' }}" href="/adapt?verdict=research">Spike</a>
+      <a class="chip {{ 'on' if active_verdict=='watch' }}" href="/adapt?verdict=watch">Watch</a>
+    </div>
+  </div>
+</section>
+
+{% if briefs %}
+  {% for b in briefs %}
+  <article class="story {{ 'hot' if b.decision=='adopt' or b.verdict=='adopt' }}">
+    <div class="story-head">
+      <span class="rank">{{ loop.index }}</span>
+      <h3><a href="/adapt/{{ b.id }}#handoff">{{ b.title }}</a></h3>
+    </div>
+    {% if b.excerpt %}
+      <p class="why">{{ b.excerpt }}</p>
+    {% elif b.summary %}
+      <p class="sum">{{ b.summary }}</p>
+    {% endif %}
+    {{ meters(b) }}
+    <div class="meta">
+      {{ badge(b.category, b.category_label) }}
+      {{ verdict_pill(b.verdict) }}
+      {% if b.decision %}<span class="pill lab">{{ b.decision }}</span>{% endif %}
+      <span class="dotsep"></span><span>{{ b.age }}</span>
+      {% if b.model %}<span class="dotsep"></span><span>{{ b.model }}</span>
+      {% else %}<span class="dotsep"></span><span>template</span>{% endif %}
+      <a class="pill" href="/read/{{ b.item_id }}">source</a>
+      {{ artifact_pills(b.artifacts) }}
+    </div>
+  </article>
+  {% endfor %}
+{% else %}
+  <div class="panel empty">
+    <h3>No briefs yet</h3>
+    <p>Run <code>ai-researcher run</code>. Items that clear the readiness
+    gate get a week plan automatically. Or <code>ai-researcher research</code>
+    to judge what is already stored.</p>
+  </div>
+{% endif %}
+{% endblock %}

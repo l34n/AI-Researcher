@@ -5,6 +5,44 @@
 <span class="badge c-{{ category }}">{{ label }}</span>
 {%- endmacro %}
 
+{% macro verdict_pill(verdict) -%}
+{% if verdict %}
+<span class="pill verdict v-{{ verdict }}">{{ verdict }}</span>
+{% endif %}
+{%- endmacro %}
+
+{% macro ext_link(url, text, class='') -%}
+{%- set dest = url|href -%}
+{%- if dest -%}
+<a {% if class %}class="{{ class }}" {% endif %}href="{{ dest }}" target="_blank" rel="noopener noreferrer">{{ text }}</a>
+{%- else -%}
+<span{% if class %} class="{{ class }}"{% endif %}>{{ text }}</span>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro artifact_pills(artifacts) -%}
+{% for a in artifacts[:6] %}
+  {% set dest = a|href %}
+  {% if dest %}
+    <a class="pill lab" href="{{ dest }}" target="_blank" rel="noopener noreferrer">{{ a }}</a>
+  {% else %}
+    <span class="pill">{{ a }}</span>
+  {% endif %}
+{% endfor %}
+{%- endmacro %}
+
+{% macro meters(item) -%}
+{% if item.readiness %}
+<div class="meters" title="quality / practicality / feasibility / usefulness">
+  <span class="m"><i style="width:{{ (item.quality * 100)|round }}%"></i><em>Q</em></span>
+  <span class="m"><i style="width:{{ (item.practicality * 100)|round }}%"></i><em>P</em></span>
+  <span class="m"><i style="width:{{ (item.feasibility * 100)|round }}%"></i><em>F</em></span>
+  <span class="m"><i style="width:{{ (item.usefulness * 100)|round }}%"></i><em>U</em></span>
+  <span class="m-read">{{ '%.2f'|format(item.readiness) }}</span>
+</div>
+{% endif %}
+{%- endmacro %}
+
 {% macro savebtn(item) -%}
 <button class="save {{ 'on' if item.is_saved }}" data-id="{{ item.id }}"
         title="{{ 'Saved' if item.is_saved else 'Save' }}"
@@ -16,21 +54,35 @@
 <div class="item">
   <div class="imp {{ 'hi' if item.importance >= 0.7 }}">{{ '%.2f'|format(item.importance) }}</div>
   <div class="main">
-    <h4><a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a></h4>
+    <h4><a href="/read/{{ item.id }}">{{ item.title }}</a></h4>
     {% if item.summary %}<p class="sum">{{ item.summary }}</p>{% endif %}
+    {{ meters(item) }}
     <div class="meta">
       {{ badge(item.category, item.category_label) }}
+      {{ verdict_pill(item.verdict) }}
       <span class="src">{{ item.source_name }}</span>
+      {% if item.url %}
+        <span class="dotsep"></span>{{ ext_link(item.url, "original") }}
+      {% endif %}
       <span class="dotsep"></span><span>{{ item.age }}</span>
+      {% if item.freshness_status and item.freshness_status != 'fresh' %}
+        <span class="pill fresh-{{ item.freshness_status }}">{{ item.freshness_status }}</span>
+      {% endif %}
       {% if item.domain %}<span class="dotsep"></span><span>{{ item.domain }}</span>{% endif %}
       {% if item.engagement %}<span class="pill">▲ {{ item.engagement }}</span>{% endif %}
       {% if item.comments %}<span class="pill">💬 {{ item.comments }}</span>{% endif %}
       {% if item.discussion_url and item.discussion_url != item.url %}
-        <a href="{{ item.discussion_url }}" target="_blank" rel="noopener">discussion</a>
+        {{ ext_link(item.discussion_url, "discussion") }}
       {% endif %}
       {% for e in item.entities[:4] %}
         <a class="pill" href="/search?q={{ e|urlencode }}">{{ e }}</a>
       {% endfor %}
+      {% if item.research_id %}
+        <a class="pill lab" href="/adapt/{{ item.research_id }}#handoff">lab notes</a>
+      {% endif %}
+      <button class="fb" data-id="{{ item.id }}" data-kind="useful" title="Mark useful">useful</button>
+      <button class="fb" data-id="{{ item.id }}" data-kind="irrelevant" title="Mark irrelevant">hide</button>
+      <button class="fb" data-id="{{ item.id }}" data-kind="stale" title="Mark stale">stale</button>
     </div>
   </div>
   {{ savebtn(item) }}
@@ -39,20 +91,32 @@
 
 {# A clustered story: the primary item plus everything else covering it. #}
 {% macro story_card(story, rank) -%}
-<article class="story {{ 'hot' if story.source_count >= 3 }}">
+<article class="story {{ 'hot' if story.source_count >= 3 or story.research_id }} {{ 'stale' if story.stale or story.freshness_status == 'stale' }}" id="story-{{ story.id }}">
   <div class="story-head">
     <span class="rank">{{ rank }}</span>
-    <h3><a href="{{ story.primary.url }}" target="_blank" rel="noopener">{{ story.label }}</a></h3>
+    <h3><a href="/story/{{ story.id }}">{{ story.label }}</a></h3>
     {{ savebtn(story.primary) }}
   </div>
 
   {% if story.summary %}<p class="sum">{{ story.summary }}</p>{% endif %}
-  {% if story.primary.why %}<p class="why">{{ story.primary.why }}</p>{% endif %}
+  {% if story.adapt_excerpt %}
+    <p class="why">{{ story.adapt_excerpt }}</p>
+  {% elif story.primary.why %}
+    <p class="why">{{ story.primary.why }}</p>
+  {% endif %}
+  {{ meters(story) }}
 
   <div class="meta">
     {{ badge(story.category, story.category_label) }}
+    {{ verdict_pill(story.verdict) }}
+    {% if story.freshness_status %}
+      <span class="pill fresh-{{ story.freshness_status }}" title="{{ story.ranking_why }}">{{ story.freshness_status }}</span>
+    {% endif %}
+    {% if story.confidence %}
+      <span class="pill" title="corroboration · source quality · recency">conf {{ '%.2f'|format(story.confidence) }}</span>
+    {% endif %}
     {% if story.source_count > 1 %}
-      <span class="pill corr">{{ story.source_count }} sources</span>
+      <span class="pill corr" title="{{ story.ranking_why }}">{{ story.source_count }} sources</span>
     {% else %}
       <span class="src">{{ story.primary.source_name }}</span>
     {% endif %}
@@ -60,6 +124,9 @@
     {% for e in story.entities[:5] %}
       <a class="pill" href="/search?q={{ e|urlencode }}">{{ e }}</a>
     {% endfor %}
+    {% if story.research_id %}
+      <a class="pill lab" href="/adapt/{{ story.research_id }}#handoff">{{ story.research_decision or 'week plan' }} →</a>
+    {% endif %}
   </div>
 
   {% if story.others %}
@@ -68,7 +135,7 @@
     <ul>
       {% for o in story.others %}
       <li>
-        <a href="{{ o.url }}" target="_blank" rel="noopener">{{ o.title }}</a>
+        <a href="/read/{{ o.id }}">{{ o.title }}</a>
         <span class="o-src">{{ o.source_name }} · {{ o.age }}</span>
       </li>
       {% endfor %}

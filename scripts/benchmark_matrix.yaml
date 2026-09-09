@@ -1,0 +1,118 @@
+# L34N benchmark model matrix.
+#
+# Loaded by scripts/benchmark_models.py. Override with `--matrix path/to.yaml`.
+#
+# Fields:
+#   slug         filename-safe id; result files are named <slug>.json
+#   provider     "openrouter" | "ollama"
+#   model        exact provider model id (must match the provider's catalog)
+#   tier         "free" | "local" | "paid"  (drives --profile filtering)
+#   input_per_m  USD per 1M input tokens  (omit for local/free tiers)
+#   output_per_m USD per 1M output tokens (omit for local/free tiers)
+#   notes        free-form; shown on failure summaries
+#   reasoning    OpenRouter only; true keeps hidden reasoning on (default off,
+#                because reasoning eats max_tokens and returns empty content)
+#
+# Prices verified against OpenRouter catalog 2026-09-03. Update as the
+# catalog changes.
+
+models:
+
+  # ── Free-tier OpenRouter ────────────────────────────────────────────────
+  # Free slugs churn. Verified against the live catalog 2026-09-04; the three
+  # APE-711 candidates (nemotron-super-49b-v1, llama-3.3-70b-instruct,
+  # gpt-oss-120b :free) are gone and were dropped because a 404 sweep scores
+  # as an all-fallback run, not as a model.
+  - slug: or-nemotron-3-super-120b-free
+    provider: openrouter
+    model: nvidia/nemotron-3-super-120b-a12b:free
+    tier: free
+    notes: "Substitute for nemotron-super-49b (present in live catalog)"
+
+  - slug: or-glm-5-2-free
+    provider: openrouter
+    model: z-ai/glm-5.2:free
+    tier: free
+    notes: "Additional free candidate"
+
+  - slug: or-gemma-4-31b-free
+    provider: openrouter
+    model: google/gemma-4-31b-it:free
+    tier: free
+    notes: "Free Gemma 4 31B; closest free analogue to the local gemma3:27b"
+
+  - slug: or-minimax-m2-7-free
+    provider: openrouter
+    model: minimax/minimax-m2.7:free
+    tier: free
+    notes: "Free MiniMax M2.7"
+
+  - slug: or-nemotron-3-5-lightning-free
+    provider: openrouter
+    model: nvidia/nemotron-3.5-lightning:free
+    tier: free
+    notes: "Small/fast free Nemotron"
+
+  # ── Local Ollama ────────────────────────────────────────────────────────
+  - slug: ollama-qwen3-32b
+    provider: ollama
+    model: qwen3:32b
+    tier: local
+
+  - slug: ollama-gemma3-27b
+    provider: ollama
+    model: gemma3:27b
+    tier: local
+
+  - slug: ollama-qwen25-72b
+    provider: ollama
+    model: qwen2.5:72b
+    tier: local
+    notes: "Needs >24GB VRAM; times out on smaller GPUs"
+
+  - slug: ollama-nemotron-latest
+    provider: ollama
+    model: nemotron:latest
+    tier: local
+    notes: "APE-711 asked for nemotron:70b; closest local tag is :latest"
+
+  - slug: ollama-llama31-8b
+    provider: ollama
+    model: llama3.1:8b
+    tier: local
+
+  # ── Paid OpenRouter ─────────────────────────────────────────────────────
+  - slug: or-gemini-2-5-flash
+    provider: openrouter
+    model: google/gemini-2.5-flash
+    tier: paid
+    input_per_m: 0.30
+    output_per_m: 2.50
+
+  - slug: or-deepseek-chat
+    provider: openrouter
+    model: deepseek/deepseek-chat
+    tier: paid
+    input_per_m: 0.14
+    output_per_m: 0.28
+
+  - slug: or-solar-pro4
+    provider: openrouter
+    model: upstage/solar-pro4
+    tier: paid
+    input_per_m: 0.03
+    output_per_m: 0.30
+
+  - slug: or-qwen3-7-flash
+    provider: openrouter
+    model: qwen/qwen3.7-flash
+    tier: paid
+    input_per_m: 0.03
+    output_per_m: 0.30
+
+  - slug: or-gpt-4-1-nano
+    provider: openrouter
+    model: openai/gpt-4.1-nano
+    tier: paid
+    input_per_m: 0.10
+    output_per_m: 0.40

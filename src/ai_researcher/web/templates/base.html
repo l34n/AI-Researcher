@@ -19,12 +19,14 @@
     <a href="/feed"    class="{{ 'on' if page=='feed' }}">Firehose</a>
     <a href="/search"  class="{{ 'on' if page=='search' }}">Search</a>
     <a href="/saved"   class="{{ 'on' if page=='saved' }}">Saved{% if stats.saved %} ({{ stats.saved }}){% endif %}</a>
+    <a href="/adapt"   class="{{ 'on' if page=='adapt' }}">Adapt{% if stats.research_briefs %} ({{ stats.research_briefs }}){% endif %}</a>
     <a href="/sources" class="{{ 'on' if page=='sources' }}">Sources</a>
     <a href="/runs"    class="{{ 'on' if page=='runs' }}">Runs</a>
   </nav>
   <div class="topstats" id="topstats">
     <span><b data-stat="items_24h">{{ stats.items_24h }}</b> items/24h</span>
     <span><b data-stat="stories_today">{{ stats.stories_today }}</b> stories</span>
+    <span title="Implementation briefs"><b data-stat="research_briefs">{{ stats.research_briefs }}</b> ready</span>
     <span title="{{ stats.sources_failing }} failing"><b data-stat="sources_ok">{{ stats.sources_ok }}</b>/<span data-stat="sources_total">{{ stats.sources_total }}</span> sources</span>
     <span id="lastrun">{{ stats.last_run }}</span>
   </div>

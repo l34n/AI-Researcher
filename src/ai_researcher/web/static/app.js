@@ -17,6 +17,25 @@
 
   /* ── save / unsave ─────────────────────────────────────────── */
   document.addEventListener("click", function (ev) {
+    var copyBtn = ev.target.closest("[data-copy-target]");
+    if (copyBtn) {
+      ev.preventDefault();
+      var el = document.getElementById(copyBtn.getAttribute("data-copy-target"));
+      if (!el) return;
+      var text = el.value || el.textContent || "";
+      var done = function () { toast("Copied handoff for agent"); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(function () {
+          toast("Could not copy");
+        });
+      } else {
+        el.focus();
+        el.select();
+        try { document.execCommand("copy"); done(); }
+        catch (e) { toast("Could not copy"); }
+      }
+      return;
+    }
     var btn = ev.target.closest(".save");
     if (!btn) return;
     ev.preventDefault();
@@ -36,6 +55,41 @@
       .catch(function () { toast("Could not save — is the server still up?"); })
       .finally(function () { btn.disabled = false; });
   });
+
+  document.addEventListener("click", function (ev) {
+    var btn = ev.target.closest(".fb");
+    if (!btn) return;
+    ev.preventDefault();
+    var id = btn.dataset.id;
+    var kind = btn.dataset.kind;
+    fetch("/api/feedback/" + id + "?kind=" + encodeURIComponent(kind), { method: "POST" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function () { toast("Noted: " + kind); })
+      .catch(function () { toast("Could not record feedback"); });
+  });
+
+  var regen = document.getElementById("regen-brief");
+  if (regen) {
+    regen.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      regen.disabled = true;
+      regen.textContent = "Regenerating…";
+      fetch("/api/brief/regenerate", { method: "POST" })
+        .then(function (r) { return r.json(); })
+        .then(function () {
+          toast("Brief regenerated — reloading");
+          setTimeout(function () { location.reload(); }, 700);
+        })
+        .catch(function () {
+          toast("Could not regenerate the brief");
+          regen.disabled = false;
+          regen.textContent = "Regenerate brief";
+        });
+    });
+  }
 
   /* ── verbose ingest status ─────────────────────────────────── */
   var VERBOSE_KEY = "air.verboseIngest";
@@ -221,7 +275,7 @@
   document.addEventListener("keydown", function (ev) {
     var typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
     if (typing || ev.metaKey || ev.ctrlKey || ev.altKey) return;
-    var go = { d: "/", f: "/feed", s: "/search", b: "/saved", h: "/sources", r: "/runs" };
+    var go = { d: "/", f: "/feed", s: "/search", b: "/saved", a: "/adapt", h: "/sources", r: "/runs" };
     if (go[ev.key]) { location.href = go[ev.key]; return; }
     if (ev.key === "/") {
       ev.preventDefault();

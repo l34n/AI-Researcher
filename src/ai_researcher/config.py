@@ -13,6 +13,18 @@ PKG_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = PKG_ROOT.parent.parent
 
 
+def _default_sources_path() -> Path:
+    """Repo checkout, packaged wheel, or the Docker image copy — first hit wins."""
+    for candidate in (
+        PROJECT_ROOT / "config" / "sources.yaml",
+        PKG_ROOT / "packaged_sources.yaml",
+        Path("/app/config/sources.yaml"),
+    ):
+        if candidate.is_file():
+            return candidate
+    return PROJECT_ROOT / "config" / "sources.yaml"
+
+
 def _load_dotenv(path: Path) -> None:
     """Minimal .env reader. Real environment variables always win."""
     if not path.is_file():
@@ -39,6 +51,13 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
+def _env_float(key: str, default: float) -> float:
+    try:
+        return float(_env(key) or default)
+    except ValueError:
+        return default
+
+
 @dataclass
 class Settings:
     host: str = "0.0.0.0"
@@ -50,8 +69,33 @@ class Settings:
     ollama_chat_model: str = ""
     ollama_embed_model: str = ""
     ollama_timeout: int = 180
+    openrouter_api_key: str = ""
+    openrouter_model: str = "google/gemini-2.5-flash"
+    openrouter_premium_model: str = "anthropic/claude-sonnet-4"
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_premium_model: str = "gemini-2.5-pro"
+    premium_readiness: float = 0.62
     enrich_budget: int = 40
     enrich_time_budget: int = 900
+    judge_budget: int = 24
+    judge_time_budget: int = 400
+    research_budget: int = 4
+    research_time_budget: int = 900
+    research_threshold: float = 0.62
+
+    # Conservative local default. Empty still auto-picks, but auto-pick
+    # refuses to load a 30B+ model just because it is installed.
+    ollama_default_chat_model: str = "gemma3:4b"
+    ollama_enrich_model: str = ""
+    ollama_judge_model: str = ""
+    ollama_research_model: str = ""
+    ollama_brief_model: str = ""
+    max_model_memory_gb: float = 8.0
+    max_context: int = 8192
+    max_concurrent_generations: int = 2
+    daily_model_calls: int = 250
+    prefer_device: str = "auto"  # auto | cpu | gpu
 
     user_agent: str = "ai-researcher/0.1 (+local dashboard)"
     fetch_concurrency: int = 8
@@ -63,7 +107,7 @@ class Settings:
     reddit_client_secret: str = ""
     github_token: str = ""
 
-    sources_path: Path = field(default_factory=lambda: PROJECT_ROOT / "config" / "sources.yaml")
+    sources_path: Path = field(default_factory=_default_sources_path)
 
     @property
     def db_path(self) -> Path:
@@ -81,8 +125,30 @@ class Settings:
             ollama_chat_model=_env("OLLAMA_CHAT_MODEL"),
             ollama_embed_model=_env("OLLAMA_EMBED_MODEL"),
             ollama_timeout=_env_int("OLLAMA_TIMEOUT", 180),
+            openrouter_api_key=_env("OPENROUTER_API_KEY"),
+            openrouter_model=_env("OPENROUTER_MODEL") or "google/gemini-2.5-flash",
+            openrouter_premium_model=_env("OPENROUTER_PREMIUM_MODEL") or "anthropic/claude-sonnet-4",
+            gemini_api_key=_env("GEMINI_API_KEY") or _env("GOOGLE_API_KEY"),
+            gemini_model=_env("GEMINI_MODEL") or "gemini-2.5-flash",
+            gemini_premium_model=_env("GEMINI_PREMIUM_MODEL") or "gemini-2.5-pro",
+            premium_readiness=_env_float("AIR_PREMIUM_READINESS", 0.62),
             enrich_budget=_env_int("AIR_ENRICH_BUDGET", 40),
             enrich_time_budget=_env_int("AIR_ENRICH_TIME_BUDGET", 900),
+            judge_budget=_env_int("AIR_JUDGE_BUDGET", 24),
+            judge_time_budget=_env_int("AIR_JUDGE_TIME_BUDGET", 400),
+            research_budget=_env_int("AIR_RESEARCH_BUDGET", 4),
+            research_time_budget=_env_int("AIR_RESEARCH_TIME_BUDGET", 900),
+            research_threshold=_env_float("AIR_RESEARCH_THRESHOLD", 0.62),
+            ollama_default_chat_model=_env("OLLAMA_DEFAULT_CHAT_MODEL", "gemma3:4b") or "gemma3:4b",
+            ollama_enrich_model=_env("AIR_ENRICH_MODEL") or _env("OLLAMA_ENRICH_MODEL"),
+            ollama_judge_model=_env("AIR_JUDGE_MODEL") or _env("OLLAMA_JUDGE_MODEL"),
+            ollama_research_model=_env("AIR_RESEARCH_MODEL") or _env("OLLAMA_RESEARCH_MODEL"),
+            ollama_brief_model=_env("AIR_BRIEF_MODEL") or _env("OLLAMA_BRIEF_MODEL"),
+            max_model_memory_gb=_env_float("AIR_MAX_MODEL_MEMORY_GB", 8.0),
+            max_context=_env_int("AIR_MAX_CONTEXT", 8192),
+            max_concurrent_generations=_env_int("AIR_MAX_CONCURRENT_GEN", 2),
+            daily_model_calls=_env_int("AIR_DAILY_MODEL_CALLS", 250),
+            prefer_device=_env("AIR_PREFER_DEVICE", "auto") or "auto",
             user_agent=_env("AIR_USER_AGENT", "ai-researcher/0.1 (+local dashboard)"),
             fetch_concurrency=_env_int("AIR_FETCH_CONCURRENCY", 8),
             item_max_age_days=_env_int("AIR_ITEM_MAX_AGE_DAYS", 14),
@@ -92,6 +158,10 @@ class Settings:
             reddit_client_secret=_env("REDDIT_CLIENT_SECRET"),
             github_token=_env("GITHUB_TOKEN"),
         )
+        if _env("AIR_SOURCES_PATH"):
+            s.sources_path = Path(_env("AIR_SOURCES_PATH")).expanduser()
+            if not s.sources_path.is_absolute():
+                s.sources_path = (PROJECT_ROOT / s.sources_path).resolve()
         if not s.data_dir.is_absolute():
             s.data_dir = (PROJECT_ROOT / s.data_dir).resolve()
         s.data_dir.mkdir(parents=True, exist_ok=True)

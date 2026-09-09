@@ -18,12 +18,18 @@ from ..config import Settings
 
 log = logging.getLogger("ai_researcher.ollama")
 
-# Preferred chat models, best first. Matched as a prefix against installed tags,
-# so "qwen2.5:7b-instruct" satisfies a "qwen2.5" preference.
+# Preferred chat models, smallest honest default first. A prefix match against
+# installed tags means "gemma3:4b" wins over a 27B gemma3 that happens to be
+# installed. Auto-pick never selects a model above MAX_AUTO_PARAMS_B.
 CHAT_PREFERENCES = [
-    "qwen3", "llama3.3", "llama3.2", "llama3.1", "qwen2.5", "mistral-nemo",
-    "gemma3", "gemma2", "phi4", "mistral", "nous-hermes", "llama3",
+    "gemma3:4b", "qwen3:4b", "llama3.2:3b", "gemma3:1b", "qwen2.5:3b",
+    "phi4-mini", "gemma2:2b", "llama3.2:1b",
+    "qwen3:8b", "qwen2.5:7b", "llama3.1:8b", "gemma3",
+    "qwen3", "llama3.2", "llama3.1", "qwen2.5", "mistral-nemo",
+    "gemma2", "phi4", "mistral", "nous-hermes", "llama3",
 ]
+MAX_AUTO_PARAMS_B = 8.0
+_PARAM_TAG = re.compile(r":(\d+(?:\.\d+)?)b\b", re.IGNORECASE)
 EMBED_PREFERENCES = [
     "nomic-embed-text", "mxbai-embed-large", "bge-m3", "snowflake-arctic-embed",
     "all-minilm", "embeddinggemma",
@@ -86,16 +92,35 @@ class OllamaClient:
             # Honour an explicit choice even if it isn't installed yet — Ollama
             # will pull it on first use, and a hard failure here would be worse.
             return configured
+
         def is_embed(tag: str) -> bool:
             low = tag.lower()
             return any(m in low for m in EMBED_MARKERS)
 
         pool = [t for t in installed if is_embed(t) == embed]
+        if not embed:
+            default = getattr(self.settings, "ollama_default_chat_model", "") or "gemma3:4b"
+            for tag in pool:
+                if tag.lower() == default.lower() or tag.lower().startswith(default.lower()):
+                    if not self._over_cap(tag):
+                        return tag
+            safe = [t for t in pool if not self._over_cap(t)]
+            for pref in preferences:
+                for tag in safe:
+                    if tag.lower().startswith(pref.lower()):
+                        return tag
+            return safe[0] if safe else None
         for pref in preferences:
             for tag in pool:
                 if tag.lower().startswith(pref.lower()):
                     return tag
         return pool[0] if pool else None
+
+    def _over_cap(self, tag: str) -> bool:
+        if _too_large(tag):
+            return True
+        max_gb = float(getattr(self.settings, "max_model_memory_gb", 8.0) or 8.0)
+        return model_over_budget(tag, max_gb=max_gb)
 
     @property
     def chat_model(self) -> str:
@@ -109,6 +134,10 @@ class OllamaClient:
     def installed(self) -> list[str]:
         return list(self._installed or [])
 
+    def model_for(self, *, premium: bool = False, role: str = "") -> str:
+        """Local Ollama has one chat model; premium/role are no-ops here."""
+        return self.chat_model
+
     # ── generation ───────────────────────────────────────────────────
     async def generate_json(
         self,
@@ -118,15 +147,22 @@ class OllamaClient:
         schema: dict[str, Any] | None = None,
         num_predict: int = 512,
         temperature: float = 0.1,
+        premium: bool = False,
+        model: str | None = None,
+        role: str = "",
     ) -> dict[str, Any] | None:
         """Generate and parse a JSON object, or None if the model wouldn't."""
+        use_model = model or self.chat_model
+        if not use_model:
+            return None
         options = {
             "temperature": temperature,
             "num_predict": num_predict,
             "top_p": 0.9,
+            "num_ctx": max(1024, int(getattr(self.settings, "max_context", 8192) or 8192)),
         }
         body: dict[str, Any] = {
-            "model": self.chat_model,
+            "model": use_model,
             "prompt": prompt,
             "stream": False,
             "options": options,
@@ -152,14 +188,22 @@ class OllamaClient:
     async def generate_text(
         self, prompt: str, *, system: str = "", num_predict: int = 900,
         temperature: float = 0.3, timeout: float | None = None,
+        premium: bool = False, model: str | None = None, role: str = "",
     ) -> str | None:
         """Long-form generation. `timeout` overrides the client default, which
         is sized for short per-item calls and is too tight for a full brief."""
+        use_model = model or self.chat_model
+        if not use_model:
+            return None
         body: dict[str, Any] = {
-            "model": self.chat_model,
+            "model": use_model,
             "prompt": prompt,
             "stream": False,
-            "options": {"temperature": temperature, "num_predict": num_predict},
+            "options": {
+                "temperature": temperature,
+                "num_predict": num_predict,
+                "num_ctx": max(1024, int(getattr(self.settings, "max_context", 8192) or 8192)),
+            },
             "think": False,
             "keep_alive": "10m",
         }
@@ -170,8 +214,6 @@ class OllamaClient:
     async def _generate(
         self, body: dict[str, Any], *, timeout: float | None = None
     ) -> str | None:
-        if not self.chat_model:
-            return None
         kwargs = {"timeout": timeout} if timeout else {}
         try:
             resp = await self._client.post(
@@ -212,6 +254,29 @@ class OllamaClient:
 
 
 _JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
+
+
+def param_billions(tag: str) -> float | None:
+    match = _PARAM_TAG.search(tag or "")
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _too_large(tag: str, *, limit: float = MAX_AUTO_PARAMS_B) -> bool:
+    size = param_billions(tag)
+    return size is not None and size > limit
+
+
+def model_over_budget(tag: str, *, max_gb: float) -> bool:
+    """Rough Q4 footprint: ~0.6 GB per billion params plus 1.5 GB KV headroom."""
+    size = param_billions(tag)
+    if size is None:
+        return False
+    return (size * 0.6 + 1.5) > max_gb
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:

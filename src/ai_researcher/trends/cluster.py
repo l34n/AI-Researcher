@@ -23,7 +23,7 @@ import numpy as np
 from ..db import Database, jdump, jload
 from ..enrich.embed import load_vectors
 from ..util import iso, local_day, parse_datetime, tokens, utcnow
-from .score import score_cluster, score_item
+from .score import explain_cluster, score_cluster, score_item
 
 log = logging.getLogger("ai_researcher.cluster")
 
@@ -113,6 +113,7 @@ def build_clusters(db: Database, *, window_hours: int = 48, day: str | None = No
         LEFT JOIN enrichment e ON e.item_id = i.id
         LEFT JOIN sources s ON s.key = i.source_key
         WHERE COALESCE(i.published_at, i.fetched_at) >= ?
+          AND COALESCE(i.relevant, 1) != 0
         ORDER BY COALESCE(i.published_at, i.fetched_at) DESC
         """,
         (cutoff,),
@@ -221,14 +222,16 @@ def build_clusters(db: Database, *, window_hours: int = 48, day: str | None = No
             cur = conn.execute(
                 """
                 INSERT INTO clusters (day, label, summary, category, score, size,
-                                      source_count, first_seen, last_seen, entities, created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                                      source_count, first_seen, last_seen, entities,
+                                      ranking_why, confidence, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     day, record["label"], record["summary"], record["category"],
                     record["score"], len(group), record["source_count"],
                     record["first_seen"], record["last_seen"],
-                    jdump(record["entities"]), iso(now),
+                    jdump(record["entities"]), record["ranking_why"],
+                    record["confidence"], iso(now),
                 ),
             )
             cluster_id = cur.lastrowid
@@ -285,15 +288,27 @@ def _summarise_group(group: list[dict], *, now) -> dict[str, Any]:
     first_seen = iso(min(times)) if times else iso(now)
     last_seen = iso(max(times)) if times else iso(now)
 
+    source_count = len({it["source_key"] for it in group})
+    confidence = min(
+        1.0,
+        0.35
+        + 0.12 * min(source_count, 4)
+        + 0.12 * (1 if primary.get("tier") in ("lab", "vendor", "research") else 0)
+        + 0.18 * min(1.0, float(primary.get("importance") or 0.5))
+        + 0.08 * min(1.0, len(group) / 5),
+    )
+
     return {
         "label": primary["title"],
         "summary": primary["summary"] or primary["why"] or "",
         "category": category,
         "score": round(score_cluster(group, now=now), 4),
-        "source_count": len({it["source_key"] for it in group}),
+        "source_count": source_count,
         "first_seen": first_seen,
         "last_seen": last_seen,
         "entities": [e for e, _ in entity_counts.most_common(6)],
         "tags": [t for t, _ in tag_counts.most_common(6)],
         "primary_id": primary["id"],
+        "ranking_why": explain_cluster(group, now=now),
+        "confidence": round(confidence, 3),
     }

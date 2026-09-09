@@ -35,8 +35,10 @@ class TestCanonicalUrl:
     def test_param_order_does_not_matter(self):
         assert canonical_url("https://a.com/p?b=2&a=1") == canonical_url("https://a.com/p?a=1&b=2")
 
-    def test_non_http_passes_through(self):
-        assert canonical_url("mailto:x@y.com") == "mailto:x@y.com"
+    def test_non_http_is_dropped(self):
+        assert canonical_url("mailto:x@y.com") == ""
+        assert canonical_url("javascript:alert(1)") == ""
+        assert canonical_url("data:text/html,x") == ""
 
     def test_empty_is_safe(self):
         assert canonical_url("") == ""

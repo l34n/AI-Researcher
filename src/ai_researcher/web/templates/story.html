@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge, verdict_pill, meters, artifact_pills, savebtn %}
+{% block title %}{{ story.label }} — AI Researcher{% endblock %}
+
+{% block content %}
+<article class="reader">
+  <p class="kicker">
+    <span>{{ story.source_count }} source{{ 's' if story.source_count != 1 else '' }}</span>
+    <span class="dotsep"></span><span>{{ story.age }}</span>
+    {% if story.ranking_why %}
+      <span class="dotsep"></span><span>{{ story.ranking_why }}</span>
+    {% endif %}
+  </p>
+  <h1>{{ story.label }}</h1>
+  <p class="origin">
+    {% if story.research_id %}
+      <a class="pill lab" href="/adapt/{{ story.research_id }}#handoff">{{ story.research_decision or 'build guide' }} →</a>
+    {% endif %}
+    {{ savebtn(story.primary) }}
+  </p>
+  {% if story.summary %}
+    <p class="lede">{{ story.summary }}</p>
+  {% endif %}
+  {{ meters(story) }}
+  <div class="meta">
+    {{ badge(story.category, story.category_label) }}
+    {{ verdict_pill(story.verdict) }}
+    {% if story.confidence %}
+      <span class="pill">conf {{ '%.2f'|format(story.confidence) }}</span>
+    {% endif %}
+    {% if story.readiness %}
+      <span class="pill">{{ '%.2f'|format(story.readiness) }}</span>
+    {% endif %}
+    {% for e in story.entities[:6] %}
+      <a class="pill" href="/search?q={{ e|urlencode }}">{{ e }}</a>
+    {% endfor %}
+  </div>
+  {% if story.artifacts %}
+  <div class="meta">{{ artifact_pills(story.artifacts) }}</div>
+  {% endif %}
+</article>
+
+<section class="panel" style="margin-top:16px">
+  <h3><span>Reports</span><span>{{ story.size }}</span></h3>
+  {% for i in [story.primary] + story.others %}
+  <div class="item">
+    <div class="main">
+      <h4><a href="/read/{{ i.id }}">{{ i.title }}</a></h4>
+      {% if i.summary %}<p class="sum">{{ i.summary }}</p>{% endif %}
+      <div class="meta">
+        <span class="src">{{ i.source_name }}</span>
+        <span class="dotsep"></span><span>{{ i.age }}</span>
+        {% if i.research_id %}
+          <a class="pill lab" href="/adapt/{{ i.research_id }}#handoff">guide</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</section>
+{% endblock %}

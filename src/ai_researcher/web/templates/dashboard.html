@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "macros.html" import story_card, item_row, badge %}
+{% from "macros.html" import story_card, item_row %}
 {% block title %}AI Researcher — {{ day }}{% endblock %}
 
 {% block content %}
@@ -9,17 +9,86 @@
     <section class="panel brief">
       <h3>
         <span>Daily Brief · {{ day }}</span>
-        <span>{% if brief and brief.model %}{{ brief.model }}{% elif brief %}template{% endif %}</span>
+        <span>
+          {% if brief and brief.stale %}stale{% endif %}
+          {% if brief and brief.fallback %} · template{% endif %}
+          {% if brief and brief.model %}{{ brief.model }}{% elif brief %}template{% endif %}
+        </span>
       </h3>
       <div class="body">
-        {% if brief %}
+        {% if brief and brief.frame and brief.frame.lead %}
+          <div class="brief-frame">
+            <section class="brief-sec">
+              <h2>The one thing</h2>
+              <div class="brief-item lead">
+                <h4><a href="{{ brief.frame.lead.href }}">{{ brief.frame.lead.label }}</a></h4>
+                {% if brief.frame.lead.metrics %}
+                  <p class="metrics" title="{{ brief.frame.lead.why }}">{{ brief.frame.lead.metrics }}</p>
+                {% endif %}
+                {% if brief.frame.lead.prose %}
+                  <div class="lede">{{ brief.frame.lead.prose|markdown|safe }}</div>
+                {% endif %}
+              </div>
+            </section>
+            {% if brief.frame.also %}
+            <section class="brief-sec">
+              <h2>Also today</h2>
+              <ul class="brief-list">
+                {% for row in brief.frame.also %}
+                <li>
+                  <a href="{{ row.href }}">{{ row.label }}</a>
+                  {% if row.metrics %}<span class="metrics">{{ row.metrics }}</span>{% endif %}
+                </li>
+                {% endfor %}
+              </ul>
+            </section>
+            {% endif %}
+            {% if brief.frame.closer %}
+            <section class="brief-sec">
+              <h2>Worth a closer look</h2>
+              <ul class="brief-list">
+                {% for row in brief.frame.closer %}
+                <li>
+                  <a href="{{ row.href }}">{{ row.label }}</a>
+                  {% if row.metrics %}<span class="metrics">{{ row.metrics }}</span>{% endif %}
+                  {% if row.why %}<span class="why">{{ row.why }}</span>{% endif %}
+                </li>
+                {% endfor %}
+              </ul>
+            </section>
+            {% endif %}
+            {% if brief.frame.ready %}
+            <section class="brief-sec">
+              <h2>Ready to build</h2>
+              <ul class="brief-list">
+                {% for row in brief.frame.ready %}
+                <li>
+                  <a class="ready-link" href="{{ row.href }}">{{ row.label }}</a>
+                  {% if row.metrics %}<span class="metrics">{{ row.metrics }}</span>{% endif %}
+                  {% if row.prose %}<span class="why">{{ row.prose }}</span>{% endif %}
+                </li>
+                {% endfor %}
+              </ul>
+            </section>
+            {% endif %}
+          </div>
+        {% elif brief %}
           {{ brief.markdown|markdown|safe }}
-          {% if not brief.is_today %}
-            <hr><em>No brief for today yet — showing {{ brief.day }}.</em>
-          {% endif %}
         {% else %}
           <p style="color:var(--text-dim)">No brief yet. Run an ingest, then
           <code>ai-researcher brief</code>.</p>
+        {% endif %}
+        {% if brief %}
+          {% if brief.stale %}
+            <p class="brief-stale">Inputs changed since this brief was written
+            {% if brief.invalidation_reason %} ({{ brief.invalidation_reason }}){% endif %}.</p>
+          {% endif %}
+          {% if not brief.is_today %}
+            <hr><em>No brief for today yet — showing {{ brief.day }}.</em>
+          {% endif %}
+          <form method="post" action="/api/brief/regenerate" class="brief-regen">
+            <button class="btn" type="submit" id="regen-brief">Regenerate brief</button>
+          </form>
         {% endif %}
       </div>
     </section>
@@ -34,13 +103,23 @@
         {% endif %}
       {% endfor %}
       <a class="chip {{ 'on' if min_sources > 1 }}"
-         href="/?min_sources={{ 1 if min_sources > 1 else 3 }}{% if active_category %}&category={{ active_category }}{% endif %}"
+         href="/?min_sources={{ 1 if min_sources > 1 else 3 }}{% if active_category %}&category={{ active_category }}{% endif %}{% if ready_only %}&ready=1{% endif %}"
          title="Only stories corroborated by 3+ independent sources">Corroborated</a>
+      <a class="chip {{ 'on' if ready_only }}"
+         href="/?ready={{ 0 if ready_only else 1 }}{% if active_category %}&category={{ active_category }}{% endif %}{% if min_sources > 1 %}&min_sources={{ min_sources }}{% endif %}"
+         title="Stories that cleared the quality gate">Ready</a>
     </div>
 
     {# ── ranked stories ── #}
     {% if stories %}
       {% for s in stories %}{{ story_card(s, loop.index) }}{% endfor %}
+    {% elif ready_only %}
+      <div class="panel empty">
+        <h3>Nothing ready today</h3>
+        <p>No story has cleared the quality gate yet. Open
+        <a href="/adapt">Adapt</a> for earlier briefs, or run
+        <code>ai-researcher research</code>.</p>
+      </div>
     {% elif fallback_items %}
       <section class="panel">
         <h3><span>Latest items</span><span>not yet clustered</span></h3>
@@ -76,13 +155,35 @@
     </section>
 
     <section class="panel">
+      <h3><span>Ready to build</span><span>this week</span></h3>
+      <div class="body">
+        {% if ready %}
+          {% for b in ready %}
+          <div class="drop">
+            <div class="n">
+              <a href="/adapt/{{ b.id }}#handoff">{{ b.title }}</a>
+              <span class="s">{{ b.decision or b.verdict }} · {{ '%.2f'|format(b.readiness) }} · {{ b.age }}</span>
+              {% if b.excerpt %}<span class="s">{{ b.excerpt }}</span>{% endif %}
+            </div>
+          </div>
+          {% endfor %}
+          <p style="margin:10px 0 0"><a href="/adapt">All implementation briefs →</a></p>
+        {% else %}
+        <p style="color:var(--text-dim);font-size:13px;margin:0">
+          After a run, stories that are specific, practical, and feasible get
+          a week plan here.</p>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="panel">
       <h3><span>Model drops</span><span>7 days</span></h3>
       <div class="body">
         {% if drops %}
           {% for d in drops %}
           <div class="drop">
             <div class="n">
-              <a href="{{ d.url }}" target="_blank" rel="noopener">{{ d.title }}</a>
+              <a href="/read/{{ d.id }}">{{ d.title }}</a>
               <span class="s">{{ d.source_name }} · {{ d.age }}
               {%- if d.meta.downloads %} · {{ '{:,}'.format(d.meta.downloads) }} downloads{% endif %}</span>
             </div>

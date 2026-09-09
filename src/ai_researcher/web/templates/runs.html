@@ -9,6 +9,7 @@
       <tr>
         <th class="num">#</th><th>Started</th><th>Status</th><th class="num">Secs</th>
         <th class="num">New</th><th class="num">Enriched</th><th class="num">Stories</th>
+        <th class="num">Briefs</th>
         <th class="num">Src ok</th><th class="num">Src fail</th><th>Errors</th>
       </tr>
     </thead>
@@ -17,11 +18,12 @@
       <tr>
         <td class="num">{{ r.id }}</td>
         <td title="{{ r.started_at }}">{{ r.started }}</td>
-        <td><span class="st {{ r.status if r.status in ('ok', 'running') else 'error' }}">{{ r.status }}</span></td>
+        <td><span class="st {{ r.status if r.status in ('ok', 'running', 'partial', 'busy') else 'error' }}">{{ r.status }}</span></td>
         <td class="num">{{ r.elapsed_s or '—' }}</td>
         <td class="num">{{ r.new_items }}</td>
         <td class="num">{{ r.enriched }}</td>
         <td class="num">{{ r.clusters }}</td>
+        <td class="num">{{ r.research_briefs }}</td>
         <td class="num">{{ r.sources_ok }}</td>
         <td class="num">{{ r.sources_failed }}</td>
         <td class="err">

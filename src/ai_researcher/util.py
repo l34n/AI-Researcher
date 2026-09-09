@@ -89,6 +89,8 @@ def canonical_url(url: str) -> str:
     if not url:
         return ""
     url = url.strip()
+    if any(ch in url for ch in "<>\"'\\"):
+        return ""
     if url.startswith("//"):
         url = "https:" + url
     try:
@@ -96,9 +98,10 @@ def canonical_url(url: str) -> str:
     except ValueError:
         return url
     if parts.scheme not in ("http", "https"):
-        return url
-
+        return ""
     host = (parts.hostname or "").lower()
+    if not host:
+        return ""
     if host.startswith("www."):
         host = host[4:]
     if host.startswith("m.") and host.count(".") >= 2:
@@ -150,6 +153,7 @@ def strip_html(html: str, limit: int = 4000) -> str:
     """Turn feed-supplied HTML into readable plain text."""
     if not html:
         return ""
+    html = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", html)
     if "<" not in html:
         return _WS_RE.sub(" ", html).strip()[:limit]
     try:

@@ -1,0 +1,114 @@
+# AI Researcher — dashboard + ingest.
+#
+#   cp .env.example .env    # optional keys
+#   docker compose up -d --build
+#
+# Profiles:
+#   (default)          dashboard with in-process hourly ingest, host Ollama
+#   worker             split ingest into a sibling container (set AIR_AUTO_REFRESH_MIN=0)
+#   ollama             bundled Ollama instead of the host daemon
+#   dashboard          alias for the default service with ingest disabled
+#
+# Host Ollama is the default (host.docker.internal:11434).
+# Bundled Ollama:  OLLAMA_HOST=http://ollama:11434 docker compose --profile ollama up -d
+# Split worker:    AIR_AUTO_REFRESH_MIN=0 docker compose --profile worker up -d
+# Cloud-only:      set GEMINI_API_KEY or OPENROUTER_API_KEY; skip Ollama.
+#
+# Memory: the default chat model is gemma3:4b (~3.5 GB Q4). Raise
+# AIR_MAX_MODEL_MEMORY_GB if you pin a larger tag; auto-pick never loads >8B.
+
+name: ai-researcher
+
+x-air-env: &air-env
+  AIR_HOST: "0.0.0.0"
+  AIR_PORT: "8899"
+  AIR_DATA_DIR: /data
+  AIR_ACCESS_TOKEN: ${AIR_ACCESS_TOKEN:-}
+  AIR_SOURCES_PATH: /app/config/sources.yaml
+  OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+  OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-}
+  OLLAMA_DEFAULT_CHAT_MODEL: ${OLLAMA_DEFAULT_CHAT_MODEL:-gemma3:4b}
+  OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-}
+  OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-180}
+  AIR_ENRICH_MODEL: ${AIR_ENRICH_MODEL:-}
+  AIR_JUDGE_MODEL: ${AIR_JUDGE_MODEL:-}
+  AIR_RESEARCH_MODEL: ${AIR_RESEARCH_MODEL:-}
+  AIR_BRIEF_MODEL: ${AIR_BRIEF_MODEL:-}
+  AIR_MAX_MODEL_MEMORY_GB: ${AIR_MAX_MODEL_MEMORY_GB:-8}
+  AIR_MAX_CONTEXT: ${AIR_MAX_CONTEXT:-8192}
+  AIR_MAX_CONCURRENT_GEN: ${AIR_MAX_CONCURRENT_GEN:-2}
+  AIR_DAILY_MODEL_CALLS: ${AIR_DAILY_MODEL_CALLS:-250}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+  GEMINI_PREMIUM_MODEL: ${GEMINI_PREMIUM_MODEL:-gemini-2.5-pro}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemini-2.5-flash}
+  OPENROUTER_PREMIUM_MODEL: ${OPENROUTER_PREMIUM_MODEL:-anthropic/claude-sonnet-4}
+  AIR_PREMIUM_READINESS: ${AIR_PREMIUM_READINESS:-0.62}
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
+  REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
+  REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
+
+services:
+  ai-researcher:
+    build: .
+    image: ai-researcher:local
+    ports:
+      - "${AIR_PORT:-8899}:8899"
+    environment:
+      <<: *air-env
+      AIR_AUTO_REFRESH_MIN: ${AIR_AUTO_REFRESH_MIN:-60}
+    volumes:
+      - air-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('AIR_PORT', '8899'), timeout=4)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  worker:
+    profiles: ["worker"]
+    image: ai-researcher:local
+    build: .
+    command: ["worker", "--interval", "60"]
+    environment:
+      <<: *air-env
+      AIR_AUTO_REFRESH_MIN: "0"
+    volumes:
+      - air-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    depends_on:
+      ai-researcher:
+        condition: service_started
+
+  ollama:
+    profiles: ["ollama"]
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-models:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+    # GPU: drop a docker-compose.override.yml with the NVIDIA device reservation.
+    # CPU works; it is slow. Prefer host Ollama on a machine that already has a GPU.
+
+volumes:
+  air-data:
+  ollama-models:

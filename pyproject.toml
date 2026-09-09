@@ -52,6 +52,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/ai_researcher"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"config/sources.yaml" = "ai_researcher/packaged_sources.yaml"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m 'not network'"
+markers = [
+    "network: live source contract tests; excluded from the default run",
+]

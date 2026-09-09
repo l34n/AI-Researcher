@@ -62,7 +62,10 @@ sources:
   - {key: tc-ai,            name: TechCrunch AI,         kind: rss, tier: news, weight: 1.3, url: "https://techcrunch.com/category/artificial-intelligence/feed/"}
   - {key: verge-ai,         name: The Verge AI,          kind: rss, tier: news, weight: 1.2, url: "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"}
   - {key: ars-ai,           name: Ars Technica AI,       kind: rss, tier: news, weight: 1.3, url: "https://arstechnica.com/ai/feed/"}
-  - {key: vb-ai,            name: VentureBeat AI,        kind: rss, tier: news, weight: 1.0, url: "https://venturebeat.com/category/ai/feed/"}
+  # venturebeat.com answers 429 to every feed request from this host (any UA, no
+  # Retry-After), so use the FeedBurner mirror. It is the site-wide feed, not the
+  # AI category; most VB coverage is AI anyway and tags land in meta.feed_tags.
+  - {key: vb-ai,            name: VentureBeat AI,        kind: rss, tier: news, weight: 1.0, url: "https://feeds.feedburner.com/venturebeat/SZYF"}
   - {key: mit-tr-ai,        name: MIT Tech Review AI,    kind: rss, tier: news, weight: 1.4, url: "https://www.technologyreview.com/topic/artificial-intelligence/feed"}
   - {key: wired-ai,         name: WIRED AI,              kind: rss, tier: news, weight: 1.1, url: "https://www.wired.com/feed/tag/ai/latest/rss"}
   - {key: the-decoder,      name: The Decoder,           kind: rss, tier: news, weight: 1.1, url: "https://the-decoder.com/feed/"}

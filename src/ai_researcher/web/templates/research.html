@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge, verdict_pill, meters, artifact_pills, ext_link %}
+{% block title %}{{ brief.title }} — Adapt{% endblock %}
+
+{% block content %}
+<article class="story hot">
+  <div class="story-head">
+    <span class="rank">PLAN</span>
+    <h3><a href="/read/{{ brief.item_id }}">{{ brief.title }}</a></h3>
+  </div>
+  {% if brief.excerpt %}
+    <p class="why">{{ brief.excerpt }}</p>
+  {% elif brief.summary %}
+    <p class="sum">{{ brief.summary }}</p>
+  {% endif %}
+  {{ meters(brief) }}
+  <div class="meta">
+    {{ badge(brief.category, brief.category_label) }}
+    {{ verdict_pill(brief.verdict) }}
+    {% if brief.decision %}<span class="pill lab">{{ brief.decision }}</span>{% endif %}
+    <span class="dotsep"></span><span>{{ brief.age }}</span>
+    <span class="dotsep"></span><span>{{ brief.model or 'template' }}</span>
+    {% if brief.url %}{{ ext_link(brief.url, "original", "pill") }}{% endif %}
+    <a class="pill" href="/adapt">all briefs</a>
+  </div>
+  {% if brief.artifacts %}
+  <div class="meta">{{ artifact_pills(brief.artifacts) }}</div>
+  {% endif %}
+</article>
+
+<nav class="chips" style="margin-top:4px">
+  <a class="chip on" href="#handoff">Handoff</a>
+  {% for p in brief.pages %}
+    <a class="chip {{ 'on' if p.slug=='adapt' }}" href="#{{ p.slug }}">{{ p.title }}</a>
+  {% endfor %}
+</nav>
+
+{% if brief.handoff %}
+<section class="panel brief adapt-hero" id="handoff">
+  <h3>
+    <span>Ready to deploy</span>
+    <button type="button" class="btn" data-copy-target="handoff-md">Copy for agent</button>
+  </h3>
+  <div class="body">
+    {{ brief.handoff|markdown|safe }}
+  </div>
+  <textarea id="handoff-md" class="sr-only" readonly>{{ brief.handoff }}</textarea>
+</section>
+{% endif %}
+
+{% for p in brief.pages %}
+<section class="panel brief {{ 'adapt-hero' if p.slug=='adapt' }}" id="{{ p.slug }}">
+  <h3>
+    <span>{% if p.slug=='adapt' %}Do this week{% else %}{{ p.title }}{% endif %}</span>
+    <span>{{ p.slug }}</span>
+  </h3>
+  <div class="body">
+    {{ p.markdown|markdown|safe }}
+  </div>
+</section>
+{% endfor %}
+
+{% if not brief.pages %}
+  <div class="panel empty">
+    <h3>Brief is empty</h3>
+    <p>This row exists but no wiki pages were filed. Re-run
+    <code>ai-researcher research --force</code>.</p>
+  </div>
+{% endif %}
+{% endblock %}

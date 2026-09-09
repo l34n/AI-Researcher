@@ -11,9 +11,10 @@ git clone https://github.com/l34n/AI-Researcher.git
 cd AI-Researcher
 uv venv && uv pip install -e ".[dev]"
 cp .env.example .env
-.venv/bin/python -m pytest        # 76 tests, well under a second
+.venv/bin/python -m pytest        # well under a second; no network, no GPU
 ```
 
+Docker is the other supported way to run it (`docker compose up -d --build`).
 You do **not** need Ollama, API keys, or a GPU to develop or to run the tests.
 Every layer degrades on purpose: no Ollama falls back to rule-based enrichment
 and TF-IDF clustering, no embedding model falls back to hashed TF-IDF, no

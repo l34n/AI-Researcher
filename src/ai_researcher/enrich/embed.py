@@ -42,7 +42,8 @@ class Embedder:
         return self.client.embed_model
 
     async def run(self, limit: int = 2000) -> dict[str, int]:
-        if not await self.client.probe() or not self.client.embed_model:
+        await self.client.probe()
+        if not self.client.embed_model:
             if self.progress:
                 self.progress.update(
                     stage="embed",
@@ -55,6 +56,12 @@ class Embedder:
             return {"embedded": 0, "skipped": 1}
 
         model = self.client.embed_model
+        previous = self.db.get_kv("embed_model")
+        if previous and previous != model:
+            log.info(
+                "embedding model changed %s → %s; stored vectors will be rewritten",
+                previous, model,
+            )
         rows = self.db.query(
             """
             SELECT i.id, i.title, COALESCE(e.summary, '') AS summary
@@ -121,6 +128,7 @@ class Embedder:
                         (row["id"], model, arr.size, arr.tobytes()),
                     )
                     embedded += 1
+        self.db.set_kv("embed_model", model)
         return {"embedded": embedded, "failed_batches": failures,
                 "total": self.db.scalar("SELECT COUNT(*) FROM embeddings", default=0),
                 "model": model}

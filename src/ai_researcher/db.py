@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
@@ -30,7 +30,18 @@ CREATE TABLE IF NOT EXISTS sources (
     last_new_items INTEGER NOT NULL DEFAULT 0,
     etag           TEXT,
     last_modified  TEXT,
-    consecutive_failures INTEGER NOT NULL DEFAULT 0
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    request_count  INTEGER NOT NULL DEFAULT 0,
+    success_count  INTEGER NOT NULL DEFAULT 0,
+    timeout_count  INTEGER NOT NULL DEFAULT 0,
+    retry_count    INTEGER NOT NULL DEFAULT 0,
+    latency_ms_sum REAL NOT NULL DEFAULT 0,
+    latency_count  INTEGER NOT NULL DEFAULT 0,
+    items_returned INTEGER NOT NULL DEFAULT 0,
+    items_retained INTEGER NOT NULL DEFAULT 0,
+    last_content_change TEXT,
+    rate_limited_until TEXT,
+    status_counts  TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS items (
@@ -46,6 +57,14 @@ CREATE TABLE IF NOT EXISTS items (
     body          TEXT NOT NULL DEFAULT '',
     published_at  TEXT,
     fetched_at    TEXT NOT NULL,
+    last_fetched_at TEXT,
+    last_revalidated_at TEXT,
+    freshness_status TEXT NOT NULL DEFAULT 'fresh',
+    relevant      INTEGER NOT NULL DEFAULT -1,
+    relevance_score REAL NOT NULL DEFAULT 0,
+    relevance_reason TEXT NOT NULL DEFAULT '',
+    relevance_at  TEXT,
+    superseded_by INTEGER,
     engagement    REAL NOT NULL DEFAULT 0,
     comments      INTEGER NOT NULL DEFAULT 0,
     meta          TEXT NOT NULL DEFAULT '{}',
@@ -88,6 +107,11 @@ CREATE TABLE IF NOT EXISTS clusters (
     first_seen TEXT,
     last_seen  TEXT,
     entities   TEXT NOT NULL DEFAULT '[]',
+    freshness_status TEXT NOT NULL DEFAULT 'fresh',
+    stale      INTEGER NOT NULL DEFAULT 0,
+    invalidated_reason TEXT NOT NULL DEFAULT '',
+    ranking_why TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_clusters_day ON clusters (day, score DESC);
@@ -104,7 +128,16 @@ CREATE TABLE IF NOT EXISTS briefs (
     day        TEXT PRIMARY KEY,
     markdown   TEXT NOT NULL,
     model      TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    fingerprint TEXT NOT NULL DEFAULT '',
+    prompt_version TEXT NOT NULL DEFAULT '',
+    harness_version TEXT NOT NULL DEFAULT '',
+    validation_ok INTEGER NOT NULL DEFAULT 1,
+    validation_errors TEXT NOT NULL DEFAULT '[]',
+    fallback   INTEGER NOT NULL DEFAULT 0,
+    provenance TEXT NOT NULL DEFAULT '{}',
+    stale      INTEGER NOT NULL DEFAULT 0,
+    invalidation_reason TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS topic_daily (
@@ -139,6 +172,86 @@ CREATE TABLE IF NOT EXISTS kv (
 CREATE TABLE IF NOT EXISTS seen (
     item_id INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
     seen_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS judgments (
+    item_id      INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+    quality      REAL NOT NULL DEFAULT 0,
+    practicality REAL NOT NULL DEFAULT 0,
+    feasibility  REAL NOT NULL DEFAULT 0,
+    usefulness   REAL NOT NULL DEFAULT 0,
+    readiness    REAL NOT NULL DEFAULT 0,
+    verdict      TEXT NOT NULL DEFAULT 'skip',
+    reasons      TEXT NOT NULL DEFAULT '[]',
+    artifacts    TEXT NOT NULL DEFAULT '[]',
+    model        TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_judgments_readiness ON judgments (readiness DESC);
+CREATE INDEX IF NOT EXISTS idx_judgments_verdict ON judgments (verdict);
+
+CREATE TABLE IF NOT EXISTS research (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    cluster_id INTEGER REFERENCES clusters(id) ON DELETE SET NULL,
+    item_id    INTEGER NOT NULL UNIQUE REFERENCES items(id) ON DELETE CASCADE,
+    title      TEXT NOT NULL DEFAULT '',
+    status     TEXT NOT NULL DEFAULT 'running',
+    readiness  REAL NOT NULL DEFAULT 0,
+    verdict    TEXT NOT NULL DEFAULT '',
+    decision   TEXT NOT NULL DEFAULT '',
+    model      TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_research_status ON research (status, readiness DESC);
+
+CREATE TABLE IF NOT EXISTS research_pages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    research_id INTEGER NOT NULL REFERENCES research(id) ON DELETE CASCADE,
+    slug        TEXT NOT NULL,
+    title       TEXT NOT NULL DEFAULT '',
+    markdown    TEXT NOT NULL DEFAULT '',
+    turn        INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    UNIQUE (research_id, slug)
+);
+
+CREATE TABLE IF NOT EXISTS source_controls (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_key     TEXT NOT NULL DEFAULT '',
+    category       TEXT NOT NULL DEFAULT '',
+    muted          INTEGER NOT NULL DEFAULT 0,
+    paused         INTEGER NOT NULL DEFAULT 0,
+    weight_override REAL,
+    updated_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_controls_key ON source_controls (source_key);
+
+CREATE TABLE IF NOT EXISTS feedback (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id    INTEGER REFERENCES items(id) ON DELETE CASCADE,
+    cluster_id INTEGER,
+    kind       TEXT NOT NULL,
+    note       TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_item ON feedback (item_id);
+
+CREATE TABLE IF NOT EXISTS output_invalidations (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    reason     TEXT NOT NULL,
+    target     TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS item_revisions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id     INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    title       TEXT NOT NULL DEFAULT '',
+    body        TEXT NOT NULL DEFAULT '',
+    url         TEXT NOT NULL DEFAULT '',
+    captured_at TEXT NOT NULL,
+    change      TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -198,10 +311,64 @@ class Database:
     def _init(self) -> None:
         with self.tx() as conn:
             conn.executescript(_SCHEMA)
+            self._migrate(conn)
             self._init_fts(conn)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         if self.fts_enabled and self._needs_reindex:
             self.reindex_all()
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """Additive SQLite migrations. CREATE IF NOT EXISTS does not alter old tables."""
+        self._add_columns(conn, "sources", (
+            ("request_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("success_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("timeout_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("latency_ms_sum", "REAL NOT NULL DEFAULT 0"),
+            ("latency_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("items_returned", "INTEGER NOT NULL DEFAULT 0"),
+            ("items_retained", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_content_change", "TEXT"),
+            ("rate_limited_until", "TEXT"),
+            ("status_counts", "TEXT NOT NULL DEFAULT '{}'"),
+        ))
+        self._add_columns(conn, "items", (
+            ("last_fetched_at", "TEXT"),
+            ("last_revalidated_at", "TEXT"),
+            ("freshness_status", "TEXT NOT NULL DEFAULT 'fresh'"),
+            ("relevant", "INTEGER NOT NULL DEFAULT -1"),
+            ("relevance_score", "REAL NOT NULL DEFAULT 0"),
+            ("relevance_reason", "TEXT NOT NULL DEFAULT ''"),
+            ("relevance_at", "TEXT"),
+            ("superseded_by", "INTEGER"),
+        ))
+        self._add_columns(conn, "clusters", (
+            ("freshness_status", "TEXT NOT NULL DEFAULT 'fresh'"),
+            ("stale", "INTEGER NOT NULL DEFAULT 0"),
+            ("invalidated_reason", "TEXT NOT NULL DEFAULT ''"),
+            ("ranking_why", "TEXT NOT NULL DEFAULT ''"),
+            ("confidence", "REAL NOT NULL DEFAULT 0"),
+        ))
+        self._add_columns(conn, "briefs", (
+            ("fingerprint", "TEXT NOT NULL DEFAULT ''"),
+            ("prompt_version", "TEXT NOT NULL DEFAULT ''"),
+            ("harness_version", "TEXT NOT NULL DEFAULT ''"),
+            ("validation_ok", "INTEGER NOT NULL DEFAULT 1"),
+            ("validation_errors", "TEXT NOT NULL DEFAULT '[]'"),
+            ("fallback", "INTEGER NOT NULL DEFAULT 0"),
+            ("provenance", "TEXT NOT NULL DEFAULT '{}'"),
+            ("stale", "INTEGER NOT NULL DEFAULT 0"),
+            ("invalidation_reason", "TEXT NOT NULL DEFAULT ''"),
+        ))
+
+    @staticmethod
+    def _add_columns(conn: sqlite3.Connection, table: str, columns: tuple[tuple[str, str], ...]) -> None:
+        existing = {
+            row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        for name, spec in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {spec}")
 
     def _init_fts(self, conn: sqlite3.Connection) -> None:
         self._needs_reindex = False

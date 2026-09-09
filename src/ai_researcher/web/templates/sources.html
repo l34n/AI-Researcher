@@ -13,14 +13,14 @@
       <tr>
         <th>Source</th><th>Kind</th><th>Tier</th><th>Status</th>
         <th>Last fetch</th><th class="num">New</th><th class="num">7d</th>
-        <th class="num">Total</th><th>Note</th>
+        <th class="num">Total</th><th class="num">OK%</th><th class="num">ms</th><th>Note</th>
       </tr>
     </thead>
     <tbody>
       {% for s in sources %}
       <tr>
         <td class="name">
-          {% if s.url %}<a href="{{ s.url }}" target="_blank" rel="noopener">{{ s.name }}</a>
+          {% if s.url|href %}<a href="{{ s.url|href }}" target="_blank" rel="noopener noreferrer">{{ s.name }}</a>
           {% else %}{{ s.name }}{% endif %}
         </td>
         <td>{{ s.kind }}</td>
@@ -31,7 +31,11 @@
         <td class="num">{{ s.last_new_items }}</td>
         <td class="num">{{ s.week_items }}</td>
         <td class="num">{{ s.total_items }}</td>
-        <td class="err">{{ s.error[:90] }}</td>
+        <td class="num">{% if s.success_rate is not none %}{{ (s.success_rate * 100)|round(0)|int }}%{% else %}—{% endif %}</td>
+        <td class="num">{% if s.latency_ms_avg %}{{ s.latency_ms_avg|round(0)|int }}{% else %}—{% endif %}</td>
+        <td class="err">{{ s.error[:90] }}
+          {% if s.rate_limited_until %}<div>rate-limited until {{ s.rate_limited_until }}</div>{% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>

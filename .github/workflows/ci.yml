@@ -44,3 +44,23 @@ jobs:
         run: |
           uv run python -m ai_researcher.cli --help
           uv run ai-researcher sources
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t ai-researcher:ci .
+      - name: Smoke the health endpoint
+        run: |
+          docker run -d --name air -e AIR_AUTO_REFRESH_MIN=0 -p 8899:8899 ai-researcher:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8899/healthz; then
+              docker rm -f air
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs air
+          docker rm -f air
+          exit 1

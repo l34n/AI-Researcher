@@ -1,0 +1,21 @@
+# Runtime junk and secrets must never land in the image.
+.git
+.github
+.venv
+venv
+data
+.env
+.env.*
+!.env.example
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+.cursor
+docs
+*.png
+.DS_Store

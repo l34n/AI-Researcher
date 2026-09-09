@@ -1,4 +1,4 @@
-"""The ingest pipeline: fetch → store → enrich → embed → cluster → brief.
+"""The ingest pipeline: fetch → store → enrich → embed → cluster → judge → research → brief.
 
 One `run()` is a complete refresh. It is safe to call concurrently-ish (the web
 UI guards with a lock) and safe to interrupt: every stage commits as it goes, so
@@ -20,11 +20,16 @@ from typing import Any
 
 from .config import Settings, Source, load_sources
 from .connectors import build_registry
-from .db import Database, jdump
-from .enrich import Embedder, Enricher, OllamaClient
+from .connectors.article import hydrate_items
+from .db import Database, jdump, jload
+from .enrich import ChatRouter, Embedder, Enricher, Judge
+from .enrich.relevance import apply_relevance
 from .http import Fetcher
 from .progress import RunProgress
+from .research import DeepResearcher
 from .trends import build_clusters, compute_daily_topics, generate_brief
+from .trends.freshness import apply_cluster_freshness, apply_item_freshness, detect_supersessions
+from .trends.revalidate import revalidate_top_stories
 from .util import iso, utcnow
 
 log = logging.getLogger("ai_researcher.pipeline")
@@ -110,7 +115,23 @@ class Pipeline:
     # ── stage 1: ingest ──────────────────────────────────────────────
     async def ingest(self, only: list[str] | None = None) -> dict[str, Any]:
         sync_sources(self.db, self.sources)
-        targets = [s for s in self.sources if s.enabled and (not only or s.key in only)]
+        paused = {
+            r["source_key"]
+            for r in self.db.query(
+                "SELECT source_key FROM source_controls WHERE paused=1 AND source_key != ''"
+            )
+        }
+        muted = {
+            r["source_key"]
+            for r in self.db.query(
+                "SELECT source_key FROM source_controls WHERE muted=1 AND source_key != ''"
+            )
+        }
+        blocked = paused | muted
+        targets = [
+            s for s in self.sources
+            if s.enabled and (not only or s.key in only) and s.key not in blocked
+        ]
         self.progress.begin_sources(len(targets))
 
         fetcher = Fetcher(
@@ -120,14 +141,15 @@ class Pipeline:
         registry = build_registry(self.settings, fetcher)
         try:
             results = await asyncio.gather(
-                *(self._ingest_source(src, registry) for src in targets),
+                *(self._ingest_source(src, registry, fetcher) for src in targets),
                 return_exceptions=True,
             )
         finally:
             await fetcher.aclose()
 
         stats = {"sources": len(targets), "new_items": 0, "ok": 0, "failed": 0,
-                 "skipped": 0, "errors": []}
+                 "skipped": 0, "rate_limited": 0, "errors": [],
+                 "coverage": "complete"}
         for src, result in zip(targets, results):
             if isinstance(result, BaseException):
                 stats["failed"] += 1
@@ -139,13 +161,24 @@ class Pipeline:
                 stats["ok"] += 1
             elif result["status"] in ("disabled", "not-modified"):
                 stats["skipped"] += 1
+            elif result["status"] == "rate-limited":
+                stats["rate_limited"] += 1
+                stats["failed"] += 1
+                if result.get("error"):
+                    stats["errors"].append(f"{src.key}: {result['error']}")
             else:
                 stats["failed"] += 1
                 if result.get("error"):
                     stats["errors"].append(f"{src.key}: {result['error']}")
+        if stats["failed"] and stats["ok"]:
+            stats["coverage"] = "partial"
+        elif stats["failed"] and not stats["ok"]:
+            stats["coverage"] = "error"
+        elif stats["skipped"] == stats["sources"] and stats["sources"]:
+            stats["coverage"] = "partial"
         return stats
 
-    async def _ingest_source(self, src: Source, registry) -> dict[str, Any]:
+    async def _ingest_source(self, src: Source, registry, fetcher) -> dict[str, Any]:
         self.progress.source_start(src.key, src.name)
         connector = registry.get(src.kind)
         if connector is None:
@@ -169,37 +202,63 @@ class Pipeline:
         }
 
         started = time.monotonic()
+        events_before = len(getattr(fetcher, "events", []) or [])
         try:
             result = await connector.fetch(src, state)
         except Exception as exc:  # noqa: BLE001 - a broken feed must not sink the run
             log.warning("source %s raised: %s", src.key, exc)
-            self._record_source_status(src.key, "error", f"{type(exc).__name__}: {exc}"[:300], 0)
+            latency = (time.monotonic() - started) * 1000
+            self._record_source_status(
+                src.key, "error", f"{type(exc).__name__}: {exc}"[:300], 0,
+                latency_ms=latency, requests=1,
+            )
             self.progress.source_done(src.key, src.name, status="error", new_items=0)
             return {"status": "error", "new": 0, "error": str(exc)[:200]}
 
-        if result.status == "error":
-            if result.cursor:
-                self.db.set_kv(f"cursor:{src.key}", result.cursor)
-            self._record_source_status(src.key, "error", result.error, 0)
-            self.progress.source_done(src.key, src.name, status="error", new_items=0)
-            return {"status": "error", "new": 0, "error": result.error}
+        status = result.status
+        if result.status == "error" and (
+            "429" in (result.error or "") or "rate" in (result.error or "").lower()
+        ):
+            status = "rate-limited"
+
+        if status not in ("error", "rate-limited") and result.items:
+            try:
+                await hydrate_items(fetcher, result.items, kind=src.kind)
+            except Exception as exc:  # noqa: BLE001
+                log.info("article hydrate skipped for %s: %s", src.key, exc)
+
+        latency = (time.monotonic() - started) * 1000
+        events = (getattr(fetcher, "events", []) or [])[events_before:]
+        http_stats = _summarise_http(events)
 
         if result.cursor:
             self.db.set_kv(f"cursor:{src.key}", result.cursor)
 
+        if status in ("error", "rate-limited"):
+            self._record_source_status(
+                src.key, status, result.error, 0,
+                latency_ms=latency, http=http_stats,
+                items_returned=len(result.items),
+            )
+            self.progress.source_done(src.key, src.name, status=status, new_items=0)
+            return {"status": status, "new": 0, "error": result.error}
+
         new_count = self._store(src, result.items) if result.items else 0
         self._record_source_status(
-            src.key, result.status, result.error, new_count,
+            src.key, status, result.error, new_count,
             etag=result.etag, last_modified=result.last_modified,
+            latency_ms=latency, http=http_stats,
+            items_returned=len(result.items), items_retained=new_count,
+            content_changed=new_count > 0,
         )
         log.info(
             "%-18s %-14s %3d new / %3d fetched  (%.1fs)",
-            src.key, result.status, new_count, len(result.items), time.monotonic() - started,
+            src.key, status, new_count, len(result.items), time.monotonic() - started,
         )
         self.progress.source_done(
-            src.key, src.name, status=result.status, new_items=new_count,
+            src.key, src.name, status=status, new_items=new_count,
         )
-        return {"status": result.status, "new": new_count, "error": result.error}
+        return {"status": status, "new": new_count, "error": result.error}
 
     def _store(self, src: Source, items) -> int:
         horizon = utcnow() - timedelta(days=self.settings.item_max_age_days)
@@ -228,13 +287,14 @@ class Pipeline:
                         """
                         INSERT INTO items (source_key, external_id, url, canonical_url,
                                            url_hash, content_hash, title, author, body,
-                                           published_at, fetched_at, engagement, comments, meta)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                           published_at, fetched_at, last_fetched_at,
+                                           engagement, comments, meta, relevant)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,-1)
                         """,
                         (
                             src.key, item.external_id, item.url, item.url, item.uhash,
                             item.chash, item.title, item.author, item.body,
-                            iso(published) if published else None, now_iso,
+                            iso(published) if published else None, now_iso, now_iso,
                             item.engagement, item.comments, jdump(item.meta),
                         ),
                     )
@@ -244,16 +304,27 @@ class Pipeline:
                     # only upward — a cached listing must not erase a real count.
                     conn.execute(
                         "UPDATE items SET engagement=MAX(engagement, ?), "
-                        "comments=MAX(comments, ?) WHERE id=?",
-                        (item.engagement, item.comments, existing["id"]),
+                        "comments=MAX(comments, ?), last_fetched_at=? WHERE id=?",
+                        (item.engagement, item.comments, now_iso, existing["id"]),
                     )
         return new_count
 
     def _record_source_status(
         self, key: str, status: str, error: str, new_items: int,
         *, etag: str = "", last_modified: str = "",
+        latency_ms: float = 0, requests: int = 1,
+        http: dict | None = None, items_returned: int = 0,
+        items_retained: int = 0, content_changed: bool = False,
     ) -> None:
-        failed = status == "error"
+        failed = status in ("error", "rate-limited")
+        http = http or {}
+        row = self.db.one("SELECT status_counts FROM sources WHERE key=?", (key,))
+        counts = jload(row["status_counts"], {}) if row else {}
+        for code, n in (http.get("status") or {}).items():
+            counts[str(code)] = int(counts.get(str(code), 0)) + int(n)
+        timeouts = int(http.get("timeouts") or 0)
+        retries = int(http.get("retries") or 0)
+        reqs = max(requests, int(http.get("requests") or 0), 1 if status != "disabled" else 0)
         self.db.execute(
             """
             UPDATE sources SET
@@ -263,19 +334,45 @@ class Pipeline:
                 last_new_items = ?,
                 etag = CASE WHEN ? != '' THEN ? ELSE etag END,
                 last_modified = CASE WHEN ? != '' THEN ? ELSE last_modified END,
-                consecutive_failures = CASE WHEN ? THEN consecutive_failures + 1 ELSE 0 END
+                consecutive_failures = CASE WHEN ? THEN consecutive_failures + 1 ELSE 0 END,
+                request_count = request_count + ?,
+                success_count = success_count + ?,
+                timeout_count = timeout_count + ?,
+                retry_count = retry_count + ?,
+                latency_ms_sum = latency_ms_sum + ?,
+                latency_count = latency_count + ?,
+                items_returned = items_returned + ?,
+                items_retained = items_retained + ?,
+                last_content_change = CASE WHEN ? THEN ? ELSE last_content_change END,
+                rate_limited_until = CASE WHEN ? THEN ? ELSE rate_limited_until END,
+                status_counts = ?
             WHERE key = ?
             """,
-            (iso(utcnow()), status, error[:500], new_items,
-             etag, etag, last_modified, last_modified, 1 if failed else 0, key),
+            (
+                iso(utcnow()), status, error[:500], new_items,
+                etag, etag, last_modified, last_modified, 1 if failed else 0,
+                reqs,
+                1 if status in ("ok", "not-modified") else 0,
+                timeouts,
+                retries,
+                float(latency_ms),
+                1 if latency_ms else 0,
+                items_returned,
+                items_retained,
+                1 if content_changed else 0, iso(utcnow()),
+                1 if status == "rate-limited" else 0,
+                iso(utcnow()) if status == "rate-limited" else "",
+                jdump(counts),
+                key,
+            ),
         )
 
     # ── stage 2+: analysis ───────────────────────────────────────────
     async def analyse(self, *, brief: bool = True, force_brief: bool = False) -> dict[str, Any]:
-        client = OllamaClient(self.settings)
+        client = ChatRouter(self.settings)
         try:
             self.progress.update(
-                stage="enrich", detail="Probing Ollama", current="", done=0, total=0, active=[],
+                stage="enrich", detail="Probing chat backends", current="", done=0, total=0, active=[],
             )
             await client.probe()
             enrich_stats = await Enricher(
@@ -284,16 +381,47 @@ class Pipeline:
             embed_stats = await Embedder(
                 self.db, client, progress=self.progress,
             ).run()
+            if embed_stats.get("model"):
+                self.db.set_kv("embed_model", str(embed_stats["model"]))
+            self.progress.update(
+                stage="relevance", detail="Filtering off-topic items",
+                current="", done=0, total=0, active=[],
+            )
+            relevance_stats = apply_relevance(self.db)
+            detect_supersessions(self.db)
+            apply_item_freshness(self.db)
             self.progress.update(
                 stage="cluster", detail="Clustering items into stories",
                 current="", done=0, total=0, active=[],
             )
             cluster_stats = build_clusters(self.db)
+            apply_cluster_freshness(self.db)
             self.progress.update(
                 stage="topics", detail="Computing topic history",
                 current="", done=0, total=0, active=[],
             )
             topic_stats = compute_daily_topics(self.db)
+            judge_stats = await Judge(
+                self.settings, self.db, client, progress=self.progress,
+            ).run()
+            researcher = DeepResearcher(
+                self.settings, self.db, client, progress=self.progress,
+            )
+            research_stats = await researcher.run()
+            researcher.relink_clusters()
+            self.progress.update(
+                stage="revalidate", detail="Re-checking top story sources",
+                current="", done=0, total=0, active=[],
+            )
+            revalidate_stats: dict[str, Any] = {}
+            fetcher = Fetcher(self.settings.user_agent, concurrency=4)
+            try:
+                revalidate_stats = await revalidate_top_stories(self.db, fetcher)
+            except Exception as exc:  # noqa: BLE001
+                log.info("revalidate skipped: %s", exc)
+                revalidate_stats = {"error": str(exc)[:200]}
+            finally:
+                await fetcher.aclose()
             if brief:
                 self.progress.update(
                     stage="brief", detail="Writing daily brief",
@@ -308,8 +436,12 @@ class Pipeline:
         return {
             "enrich": enrich_stats,
             "embed": embed_stats,
+            "relevance": relevance_stats,
             "cluster": cluster_stats,
             "topics": topic_stats,
+            "judge": judge_stats,
+            "research": research_stats,
+            "revalidate": revalidate_stats,
             "brief": brief_stats,
             "ollama": {
                 "available": client.available,
@@ -317,6 +449,7 @@ class Pipeline:
                 "embed_model": client.embed_model,
                 "error": client.last_error,
             },
+            "chat": client.describe(),
         }
 
     # ── full run ─────────────────────────────────────────────────────
@@ -360,6 +493,12 @@ class Pipeline:
                 stage="prune", detail="Pruning old items", current="", done=0, total=0, active=[],
             )
             self.prune()
+            ingest = stats.get("ingest") or {}
+            coverage = ingest.get("coverage")
+            if coverage == "partial" or (ingest.get("failed") and ingest.get("ok")):
+                status = "partial"
+            elif coverage == "error" and ingest.get("failed") and not ingest.get("ok"):
+                status = "partial" if ingest.get("skipped") else "error"
         except Exception as exc:  # noqa: BLE001 - record the failure, don't hide it
             status = "error"
             stats["error"] = f"{type(exc).__name__}: {exc}"
@@ -371,7 +510,7 @@ class Pipeline:
                 "UPDATE runs SET finished_at=?, status=?, stats=? WHERE id=?",
                 (iso(utcnow()), status, jdump(stats), run_id),
             )
-            self.progress.finish(ok=status == "ok")
+            self.progress.finish(ok=status in ("ok", "partial"))
         stats["run_id"] = run_id
         stats["status"] = status
         return stats
@@ -388,7 +527,8 @@ class Pipeline:
             ids = [
                 r["id"] for r in conn.execute(
                     "SELECT id FROM items WHERE COALESCE(published_at, fetched_at) < ? "
-                    "AND id NOT IN (SELECT item_id FROM saved)",
+                    "AND id NOT IN (SELECT item_id FROM saved) "
+                    "AND id NOT IN (SELECT item_id FROM research)",
                     (cutoff,),
                 ).fetchall()
             ]
@@ -408,3 +548,22 @@ class Pipeline:
         if ids:
             log.info("pruned %s items older than %s days", len(ids), self.settings.retention_days)
         return len(ids)
+
+
+def _summarise_http(events: list[dict]) -> dict:
+    status: dict[str, int] = {}
+    timeouts = 0
+    retries = 0
+    for ev in events:
+        code = str(ev.get("status") or 0)
+        status[code] = status.get(code, 0) + 1
+        if ev.get("timeout"):
+            timeouts += 1
+        if int(ev.get("attempt") or 1) > 1:
+            retries += 1
+    return {
+        "status": status,
+        "timeouts": timeouts,
+        "retries": retries,
+        "requests": len(events),
+    }

@@ -25,16 +25,20 @@ from typing import Any
 from ..config import CATEGORIES, Settings
 from ..db import Database, jdump
 from ..progress import RunProgress
+from ..sanitize import UNTRUSTED_RULE, fence
 from ..util import iso, truncate, utcnow
 from . import heuristics as H
 from .ollama import OllamaClient
+from .unslop import UNSLOP_RULE, unslop_text
 
 log = logging.getLogger("ai_researcher.enrich")
 
 SYSTEM = (
     "You are an analyst tracking AI research, products, and industry moves. "
     "You are terse and concrete, and you never claim anything the text does not "
-    "say. Reply with JSON only."
+    "say. Reply with JSON only. "
+    + UNTRUSTED_RULE + " "
+    + UNSLOP_RULE
 )
 
 SCHEMA = {
@@ -264,9 +268,9 @@ class Enricher:
         title = row["title"] or ""
         body = row["body"] or ""
         prompt = PROMPT.format(
-            title=truncate(title, 250),
-            body=truncate(body, 900) or "(no body text)",
-            source=row["source_name"],
+            title=fence("TITLE", title, limit=250),
+            body=fence("BODY", body, limit=900),
+            source=fence("SOURCE", row["source_name"] or "", limit=80),
             categories=", ".join(CATEGORIES),
         )
         async with self._gate:
@@ -276,10 +280,10 @@ class Enricher:
         if not payload:
             return False
 
-        summary = truncate(str(payload.get("summary") or "").strip(), 320)
+        summary = unslop_text(truncate(str(payload.get("summary") or "").strip(), 320))
         if not summary:
             return False
-        why = truncate(str(payload.get("why") or "").strip(), 140)
+        why = unslop_text(truncate(str(payload.get("why") or "").strip(), 140))
 
         current = self.db.one(
             "SELECT category, entities, importance FROM enrichment WHERE item_id=?",

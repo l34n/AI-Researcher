@@ -6,6 +6,7 @@ from ..config import Settings
 from ..http import Fetcher
 from .arxiv import ArxivConnector
 from .base import Connector, FetchResult, RawItem
+from .article import extract_article, hydrate_items, should_hydrate
 from .github import GitHubReleasesConnector, GitHubTrendingConnector
 from .gnews import GoogleNewsConnector
 from .hackernews import HackerNewsConnector
@@ -42,4 +43,7 @@ __all__ = [
     "FetchResult",
     "RawItem",
     "build_registry",
+    "extract_article",
+    "hydrate_items",
+    "should_hydrate",
 ]

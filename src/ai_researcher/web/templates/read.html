@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% from "macros.html" import badge, verdict_pill, meters, artifact_pills, ext_link, savebtn %}
+{% block title %}{{ item.title }} — AI Researcher{% endblock %}
+
+{% block content %}
+<article class="reader">
+  <p class="kicker">
+    <span>{{ item.source_name }}</span>
+    {% if item.author %}<span class="dotsep"></span><span>{{ item.author }}</span>{% endif %}
+    <span class="dotsep"></span><span>{{ item.age }}</span>
+    {% if item.domain %}<span class="dotsep"></span><span>{{ item.domain }}</span>{% endif %}
+  </p>
+  <h1>{{ item.title }}</h1>
+  <p class="origin">
+    {% if item.url %}
+      {{ ext_link(item.url, "Original source", "pill") }}
+    {% endif %}
+    {% if item.cluster_id %}
+      <a class="pill" href="/story/{{ item.cluster_id }}">{{ item.cluster_label or 'Story' }}</a>
+    {% endif %}
+    {% if item.research_id %}
+      <a class="pill lab" href="/adapt/{{ item.research_id }}#handoff">{{ item.research_decision or 'build guide' }} →</a>
+    {% endif %}
+    {{ savebtn(item) }}
+  </p>
+
+  {% if item.summary %}
+    <p class="lede">{{ item.summary }}</p>
+  {% endif %}
+  {{ meters(item) }}
+  <div class="meta">
+    {{ badge(item.category, item.category_label) }}
+    {{ verdict_pill(item.verdict) }}
+    {% if item.readiness %}
+      <span class="pill">{{ '%.2f'|format(item.readiness) }}</span>
+    {% endif %}
+    {% for e in item.entities[:6] %}
+      <a class="pill" href="/search?q={{ e|urlencode }}">{{ e }}</a>
+    {% endfor %}
+  </div>
+  {% if item.artifacts %}
+  <div class="meta">{{ artifact_pills(item.artifacts) }}</div>
+  {% endif %}
+
+  <section class="panel brief" style="margin-top:16px">
+    <h3><span>Full text</span><span>scraped</span></h3>
+    <div class="body">
+      {% if item.body_markdown %}
+        {{ item.body_markdown|markdown|safe }}
+      {% else %}
+        <p style="color:var(--text-dim)">Full text was not stored. The original is linked above.</p>
+      {% endif %}
+    </div>
+  </section>
+
+  {% if item.related %}
+  <section class="panel">
+    <h3><span>Also covering this</span><span>{{ item.related|length }}</span></h3>
+    <div class="body">
+      <ul class="also-cover">
+        {% for r in item.related %}
+        <li>
+          <a href="/read/{{ r.id }}">{{ r.title }}</a>
+          <span class="o-src">{{ r.source_name }} · {{ r.age }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </section>
+  {% endif %}
+</article>
+{% endblock %}

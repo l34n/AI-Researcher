@@ -23,7 +23,7 @@
     {% endfor %}
   </select>
   <select name="order">
-    {% for o, lab in [('recent','Newest'),('important','Most important'),('engagement','Most engaged')] %}
+    {% for o, lab in [('recent','Newest'),('important','Most important'),('engagement','Most engaged'),('ready','Most ready')] %}
       <option value="{{ o }}" {{ 'selected' if order == o }}>{{ lab }}</option>
     {% endfor %}
   </select>
