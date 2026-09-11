@@ -43,10 +43,14 @@
 {% endif %}
 {%- endmacro %}
 
+{# Saving writes. PUBLIC_MODE is a Jinja global rather than a context key
+   because this file is imported without context. #}
 {% macro savebtn(item) -%}
+{% if not PUBLIC_MODE %}
 <button class="save {{ 'on' if item.is_saved }}" data-id="{{ item.id }}"
         title="{{ 'Saved' if item.is_saved else 'Save' }}"
         aria-label="save">{{ '★' if item.is_saved else '☆' }}</button>
+{% endif %}
 {%- endmacro %}
 
 {# One row in the firehose / search / saved lists. #}
@@ -80,9 +84,11 @@
       {% if item.research_id %}
         <a class="pill lab" href="/adapt/{{ item.research_id }}#handoff">lab notes</a>
       {% endif %}
+      {% if not PUBLIC_MODE %}
       <button class="fb" data-id="{{ item.id }}" data-kind="useful" title="Mark useful">useful</button>
       <button class="fb" data-id="{{ item.id }}" data-kind="irrelevant" title="Mark irrelevant">hide</button>
       <button class="fb" data-id="{{ item.id }}" data-kind="stale" title="Mark stale">stale</button>
+      {% endif %}
     </div>
   </div>
   {{ savebtn(item) }}

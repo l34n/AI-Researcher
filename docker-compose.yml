@@ -8,10 +8,12 @@
 #   worker             split ingest into a sibling container (set AIR_AUTO_REFRESH_MIN=0)
 #   ollama             bundled Ollama instead of the host daemon
 #   dashboard          alias for the default service with ingest disabled
+#   public             read-only public instance on :8898, same volume, no token
 #
 # Host Ollama is the default (host.docker.internal:11434).
 # Bundled Ollama:  OLLAMA_HOST=http://ollama:11434 docker compose --profile ollama up -d
 # Split worker:    AIR_AUTO_REFRESH_MIN=0 docker compose --profile worker up -d
+# Public mirror:   docker compose --profile public up -d
 # Cloud-only:      set GEMINI_API_KEY or OPENROUTER_API_KEY; skip Ollama.
 #
 # Memory: the default chat model is gemma3:4b (~3.5 GB Q4). Raise
@@ -97,6 +99,41 @@ services:
     depends_on:
       ai-researcher:
         condition: service_started
+
+  # Read-only public instance: AIR_PUBLIC_MODE=1 on a second port against the
+  # same volume. Deliberately not in x-air-env — the flag belongs to this
+  # service alone, so a stray AIR_PUBLIC_MODE in .env cannot disarm the
+  # private dashboard.
+  public:
+    profiles: ["public"]
+    build: .
+    image: ai-researcher:local
+    ports:
+      - "${AIR_PUBLIC_PORT:-8898}:8898"
+    environment:
+      <<: *air-env
+      AIR_PORT: "8898"
+      AIR_PUBLIC_MODE: "1"
+      AIR_AUTO_REFRESH_MIN: "0"
+    volumes:
+      - air-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 15s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('AIR_PORT', '8898'), timeout=4)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   ollama:
     profiles: ["ollama"]

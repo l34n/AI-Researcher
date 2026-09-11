@@ -2,6 +2,16 @@
 (function () {
   "use strict";
 
+  /* The read-only public instance renders body[data-public]. It also renders
+     none of the elements the write handlers bind to, so this flag is the
+     second line: every write goes through post(), which refuses there. */
+  var PUBLIC = document.body.hasAttribute("data-public");
+
+  function post(url) {
+    if (PUBLIC) return Promise.reject(new Error("read-only public instance"));
+    return fetch(url, { method: "POST" });
+  }
+
   var toastEl = document.getElementById("toast");
   var toastTimer = null;
 
@@ -36,12 +46,13 @@
       }
       return;
     }
+    if (PUBLIC) return;
     var btn = ev.target.closest(".save");
     if (!btn) return;
     ev.preventDefault();
     var id = btn.dataset.id;
     btn.disabled = true;
-    fetch("/api/save/" + id, { method: "POST" })
+    post("/api/save/" + id)
       .then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
@@ -57,12 +68,13 @@
   });
 
   document.addEventListener("click", function (ev) {
+    if (PUBLIC) return;
     var btn = ev.target.closest(".fb");
     if (!btn) return;
     ev.preventDefault();
     var id = btn.dataset.id;
     var kind = btn.dataset.kind;
-    fetch("/api/feedback/" + id + "?kind=" + encodeURIComponent(kind), { method: "POST" })
+    post("/api/feedback/" + id + "?kind=" + encodeURIComponent(kind))
       .then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
@@ -72,12 +84,12 @@
   });
 
   var regen = document.getElementById("regen-brief");
-  if (regen) {
+  if (regen && !PUBLIC) {
     regen.addEventListener("click", function (ev) {
       ev.preventDefault();
       regen.disabled = true;
       regen.textContent = "Regenerating…";
-      fetch("/api/brief/regenerate", { method: "POST" })
+      post("/api/brief/regenerate")
         .then(function (r) { return r.json(); })
         .then(function () {
           toast("Brief regenerated — reloading");
@@ -192,7 +204,15 @@
     if (lastRun && stats.last_run) lastRun.textContent = stats.last_run;
   }
 
+  // The public instance does not register the status endpoint: it carries the
+  // operational counters and live run state the public topbar drops. The gate
+  // below is the function's first statement rather than a check at each call
+  // site, because `verbose` is read from localStorage and not from the absent
+  // toggle — a same-origin deployment can still arrive here with verbose true.
+  // It resolves null, the same thing the catch below hands back, so every
+  // caller is unchanged.
   function fetchStatus() {
+    if (PUBLIC) return Promise.resolve(null);
     return fetch("/api/status")
       .then(function (r) { return r.json(); })
       .then(function (d) {
@@ -229,7 +249,7 @@
     pollTimer = setInterval(fetchStatus, ms);
   }
 
-  if (refreshBtn) {
+  if (refreshBtn && !PUBLIC) {
     refreshBtn.addEventListener("click", function () {
       refreshBtn.disabled = true;
       refreshBtn.textContent = "Refreshing…";
@@ -245,7 +265,7 @@
           active: [],
         }, true);
       }
-      fetch("/api/refresh", { method: "POST" })
+      post("/api/refresh")
         .then(function (r) {
           if (r.status === 409) { toast("A refresh is already running"); }
           else { toast("Ingest started — this can take a few minutes"); }
@@ -272,11 +292,16 @@
   if (verbose || wasRunning) fetchStatus();
 
   /* ── keyboard shortcuts ────────────────────────────────────── */
+  /* The map mirrors the rendered nav. /saved, /sources and /runs are not
+     registered on the public instance, so their keys are added only when this
+     one is private — otherwise b, h and r would navigate straight into a 404. */
+  var GO = { d: "/", f: "/feed", s: "/search", a: "/adapt" };
+  if (!PUBLIC) { GO.b = "/saved"; GO.h = "/sources"; GO.r = "/runs"; }
+
   document.addEventListener("keydown", function (ev) {
     var typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
     if (typing || ev.metaKey || ev.ctrlKey || ev.altKey) return;
-    var go = { d: "/", f: "/feed", s: "/search", b: "/saved", a: "/adapt", h: "/sources", r: "/runs" };
-    if (go[ev.key]) { location.href = go[ev.key]; return; }
+    if (GO[ev.key]) { location.href = GO[ev.key]; return; }
     if (ev.key === "/") {
       ev.preventDefault();
       var box = document.querySelector('input[type=search]');

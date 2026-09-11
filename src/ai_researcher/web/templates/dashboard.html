@@ -86,9 +86,11 @@
           {% if not brief.is_today %}
             <hr><em>No brief for today yet — showing {{ brief.day }}.</em>
           {% endif %}
+          {% if not PUBLIC_MODE %}
           <form method="post" action="/api/brief/regenerate" class="brief-regen">
             <button class="btn" type="submit" id="regen-brief">Regenerate brief</button>
           </form>
+          {% endif %}
         {% endif %}
       </div>
     </section>

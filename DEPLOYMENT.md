@@ -122,6 +122,39 @@ ai-researcher doctor
 ai-researcher sources
 ```
 
+### Public instance (read-only surface)
+
+One codebase, two processes, one SQLite file. The private dashboard above is
+unchanged; the public one is the same package with `AIR_PUBLIC_MODE=1` on a
+second port:
+
+```bash
+cd /home/ebg/l34n && source .venv/bin/activate
+AIR_PUBLIC_MODE=1 ai-researcher serve --port 8898
+# → http://<host>:8898   no token, read-only HTTP surface
+```
+
+It exposes Dashboard, Firehose, Search and Adapt; `/saved`, `/sources`, `/runs`,
+`/health`, `/api/status` and every write endpoint are unregistered, any non-GET is
+403, and no visitor action adds or changes a row — no catalog sync at startup,
+no scheduled ingest, no user-initiated write. Only the private process
+ingests, so `AIR_AUTO_REFRESH_MIN` stays where it is.
+
+The database is the part that is **not** read-only, and it is the one an
+operator has to decide about before opening port 8898. Both processes hold the
+same SQLite file open read-write; the public one is not a read-only client of
+it. Serving normally it leaves a 4152-byte WAL next to a database file that is
+otherwise byte-identical (measured twice, independently). Started against an
+older schema it may migrate that file in place: `items_fts` dropped and
+recreated with a different tokenizer, columns migrated, the full-text index
+rebuilt — on the same file the private dashboard serves from. Exposing 8898
+therefore exposes a process that can rewrite the private instance's schema, so
+back the database up first.
+
+Set `AIR_PUBLIC_MODE` on that process alone. Putting it in the shared `.env`
+would make the private dashboard read-only as well. Under Docker Compose the
+same thing is `docker compose --profile public up -d`.
+
 `scripts/install-systemd.sh` in the repo installs a background service +
 hourly timer. Not enabled yet — wait until the ingest bug is resolved so
 the timer does not spin uselessly.

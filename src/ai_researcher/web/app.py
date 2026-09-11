@@ -75,13 +75,18 @@ button{margin-top:12px;width:100%;padding:10px;border:0;border-radius:8px;backgr
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.load()
+    # The read-only public instance shares one SQLite file with the private
+    # one. It must add nothing to that file, so the catalog sync and the
+    # in-process scheduler both belong to the private process alone.
+    public = settings.public_mode
     db = Database(settings.db_path)
     progress = RunProgress(settings.data_dir / "ingest.progress.json")
     pipeline = Pipeline(settings, db, progress=progress)
-    sync_sources(db, pipeline.sources)
+    if not public:
+        sync_sources(db, pipeline.sources)
     state = RunState(progress)
 
-    auto_refresh_min = int(os.environ.get("AIR_AUTO_REFRESH_MIN", "0") or 0)
+    auto_refresh_min = 0 if public else int(os.environ.get("AIR_AUTO_REFRESH_MIN", "0") or 0)
 
     async def _do_run(**kwargs) -> dict[str, Any]:
         if state.lock.locked():
@@ -112,6 +117,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await asyncio.sleep(auto_refresh_min * 60)
             task = asyncio.create_task(loop())
             log.info("in-process refresh enabled: every %s min", auto_refresh_min)
+        # Whether this process schedules ingest at all, visible to an operator
+        # and to the tests. The public instance must always read None.
+        app.state.refresh_task = task
         yield
         if task:
             task.cancel()
@@ -124,39 +132,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     templates.env.filters["markdown"] = render_markdown
     templates.env.filters["href"] = href
     templates.env.globals["CATEGORY_LABELS"] = CATEGORY_LABELS
+    # A global rather than a context key: the macros are imported without
+    # context, so only a global reaches the save and feedback buttons.
+    templates.env.globals["PUBLIC_MODE"] = public
+
+    # ── read-only public instance ────────────────────────────────────
+    if public:
+        @app.middleware("http")
+        async def readonly(request: Request, call_next):
+            # Belt as well as braces: the write routes are never registered
+            # below, but a method check in middleware covers every path,
+            # including /static and anything added later.
+            if request.method not in ("GET", "HEAD"):
+                return JSONResponse(
+                    {"detail": "this instance is read-only"}, status_code=403
+                )
+            return await call_next(request)
 
     # ── optional access token ────────────────────────────────────────
-    @app.middleware("http")
-    async def guard(request: Request, call_next):
-        open_path = (
-            request.url.path in ("/healthz", "/readyz", "/health")
-            or request.url.path.startswith("/static")
-        )
-        if settings.access_token and not open_path:
-            supplied = (
-                request.query_params.get("k")
-                or request.headers.get("X-AIR-Token")
-                or request.cookies.get("air_token")
+    # Never registered in public mode: that instance is open by design, and a
+    # token in the shared .env belongs to the private process.
+    if not public:
+        @app.middleware("http")
+        async def guard(request: Request, call_next):
+            open_path = (
+                request.url.path in ("/healthz", "/readyz", "/health")
+                or request.url.path.startswith("/static")
             )
-            if supplied != settings.access_token:
-                if request.method == "GET" and "text/html" in (request.headers.get("accept") or ""):
-                    # A browser landed here without the token. Show a prompt
-                    # instead of a bare 401 that reads as "the site is down";
-                    # the form reuses the ?k= handling and cookie below.
-                    return HTMLResponse(_TOKEN_PROMPT, status_code=401)
-                return HTMLResponse(
-                    "<h1>401</h1><p>Append <code>?k=YOUR_TOKEN</code> to the URL.</p>",
-                    status_code=401,
+            if settings.access_token and not open_path:
+                supplied = (
+                    request.query_params.get("k")
+                    or request.headers.get("X-AIR-Token")
+                    or request.cookies.get("air_token")
                 )
-            response = await call_next(request)
-            # Remember the token so deep links inside the app keep working.
-            response.set_cookie(
-                "air_token", settings.access_token, max_age=90 * 86400,
-                httponly=True, samesite="lax",
-                secure=request.url.scheme == "https",
-            )
-            return response
-        return await call_next(request)
+                if supplied != settings.access_token:
+                    if request.method == "GET" and "text/html" in (request.headers.get("accept") or ""):
+                        # A browser landed here without the token. Show a prompt
+                        # instead of a bare 401 that reads as "the site is down";
+                        # the form reuses the ?k= handling and cookie below.
+                        return HTMLResponse(_TOKEN_PROMPT, status_code=401)
+                    return HTMLResponse(
+                        "<h1>401</h1><p>Append <code>?k=YOUR_TOKEN</code> to the URL.</p>",
+                        status_code=401,
+                    )
+                response = await call_next(request)
+                # Remember the token so deep links inside the app keep working.
+                response.set_cookie(
+                    "air_token", settings.access_token, max_age=90 * 86400,
+                    httponly=True, samesite="lax",
+                    secure=request.url.scheme == "https",
+                )
+                return response
+            return await call_next(request)
 
     def ctx(request: Request, **extra) -> dict[str, Any]:
         base = {
@@ -244,32 +271,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 fts=db.fts_enabled),
         )
 
-    @app.get("/saved", response_class=HTMLResponse)
-    async def saved(request: Request):
-        items = Q.list_items(db, hours=24 * 3650, saved_only=True, limit=300)
-        return templates.TemplateResponse(
-            request,
-            "feed.html",
-            ctx(request, page="saved", items=items, hours=0, order="recent",
-                active_category=None, active_source=None, active_tier=None,
-                sources=[], page_num=1, has_more=False, saved_view=True),
-        )
+    # Private-only pages. The public instance does not register them, so
+    # they 404 there rather than leaking saved items, source keys or runs.
+    if not public:
+        @app.get("/saved", response_class=HTMLResponse)
+        async def saved(request: Request):
+            items = Q.list_items(db, hours=24 * 3650, saved_only=True, limit=300)
+            return templates.TemplateResponse(
+                request,
+                "feed.html",
+                ctx(request, page="saved", items=items, hours=0, order="recent",
+                    active_category=None, active_source=None, active_tier=None,
+                    sources=[], page_num=1, has_more=False, saved_view=True),
+            )
 
-    @app.get("/sources", response_class=HTMLResponse)
-    async def sources(request: Request):
-        return templates.TemplateResponse(
-            request,
-            "sources.html",
-            ctx(request, page="sources", sources=Q.source_health(db)),
-        )
+        @app.get("/sources", response_class=HTMLResponse)
+        async def sources(request: Request):
+            return templates.TemplateResponse(
+                request,
+                "sources.html",
+                ctx(request, page="sources", sources=Q.source_health(db)),
+            )
 
-    @app.get("/runs", response_class=HTMLResponse)
-    async def runs(request: Request):
-        return templates.TemplateResponse(
-            request,
-            "runs.html",
-            ctx(request, page="runs", runs=Q.recent_runs(db, limit=30)),
-        )
+        @app.get("/runs", response_class=HTMLResponse)
+        async def runs(request: Request):
+            return templates.TemplateResponse(
+                request,
+                "runs.html",
+                ctx(request, page="runs", runs=Q.recent_runs(db, limit=30)),
+            )
 
     @app.get("/adapt", response_class=HTMLResponse)
     async def adapt(request: Request, verdict: str | None = Query(None)):
@@ -355,32 +385,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             return JSONResponse({"ok": False, "error": str(exc)[:120]}, status_code=503)
 
-    @app.get("/health")
-    async def health():
-        """Detailed health: liveness, readiness, source freshness, model."""
-        from ai_researcher.db import SCHEMA_VERSION
-        stats = Q.dashboard_stats(db)
-        last_ok = db.one(
-            "SELECT last_fetch_at FROM sources WHERE enabled=1 AND last_status IN ('ok','not-modified') "
-            "ORDER BY last_fetch_at DESC LIMIT 1"
-        )
-        return {
-            "ok": True,
-            "live": True,
-            "ready": True,
-            "database": "ok",
-            "schema_version": SCHEMA_VERSION,
-            "items_total": stats["items_total"],
-            "sources_ok": stats["sources_ok"],
-            "sources_failing": stats["sources_failing"],
-            "last_successful_fetch": last_ok["last_fetch_at"] if last_ok else None,
-            "last_run_status": stats["last_run_status"],
-            "chat_default": settings.ollama_chat_model or settings.ollama_default_chat_model,
-        }
+    # Operational detail — source freshness, model, schema. Private only;
+    # /healthz and /readyz above stay open in both modes.
+    if not public:
+        @app.get("/health")
+        async def health():
+            """Detailed health: liveness, readiness, source freshness, model."""
+            from ai_researcher.db import SCHEMA_VERSION
+            stats = Q.dashboard_stats(db)
+            last_ok = db.one(
+                "SELECT last_fetch_at FROM sources WHERE enabled=1 AND last_status IN ('ok','not-modified') "
+                "ORDER BY last_fetch_at DESC LIMIT 1"
+            )
+            return {
+                "ok": True,
+                "live": True,
+                "ready": True,
+                "database": "ok",
+                "schema_version": SCHEMA_VERSION,
+                "items_total": stats["items_total"],
+                "sources_ok": stats["sources_ok"],
+                "sources_failing": stats["sources_failing"],
+                "last_successful_fetch": last_ok["last_fetch_at"] if last_ok else None,
+                "last_run_status": stats["last_run_status"],
+                "chat_default": settings.ollama_chat_model or settings.ollama_default_chat_model,
+            }
 
-    @app.get("/api/status")
-    async def api_status():
-        return {"stats": Q.dashboard_stats(db), "run": state.status}
+    # Operational counters and live run state — the private `saved` count,
+    # sources_ok/sources_failing, last run and in-flight ingest progress.
+    # Clause 7 already strips these from the public topbar, so serving them
+    # on the public port would hand back what the markup withholds.
+    if not public:
+        @app.get("/api/status")
+        async def api_status():
+            return {"stats": Q.dashboard_stats(db), "run": state.status}
 
     @app.get("/api/stories")
     async def api_stories(day: str | None = None, limit: int = 40):
@@ -402,99 +440,102 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "no such research brief")
         return brief
 
-    @app.post("/api/refresh")
-    async def api_refresh(request: Request, background: bool = True):
-        if state.running:
-            return JSONResponse({"status": "busy"}, status_code=409)
-        if background:
-            asyncio.create_task(_do_run())
-            return {"status": "started"}
-        return await _do_run()
+    # Every write endpoint. Unregistered in public mode, so a GET on one
+    # of these paths is a 404 there and a 405 on the private instance.
+    if not public:
+        @app.post("/api/refresh")
+        async def api_refresh(request: Request, background: bool = True):
+            if state.running:
+                return JSONResponse({"status": "busy"}, status_code=409)
+            if background:
+                asyncio.create_task(_do_run())
+                return {"status": "started"}
+            return await _do_run()
 
-    @app.post("/api/save/{item_id}")
-    async def api_save(item_id: int):
-        exists = db.one("SELECT id FROM items WHERE id=?", (item_id,))
-        if not exists:
-            raise HTTPException(404, "no such item")
-        row = db.one("SELECT item_id FROM saved WHERE item_id=?", (item_id,))
-        if row:
-            db.execute("DELETE FROM saved WHERE item_id=?", (item_id,))
-            return {"saved": False}
-        db.execute(
-            "INSERT INTO saved (item_id, saved_at) VALUES (?,?)", (item_id, iso(utcnow()))
-        )
-        return {"saved": True}
-
-    @app.post("/api/brief/regenerate")
-    async def api_brief_regenerate():
-        from ..enrich.chat import ChatRouter
-        from ..trends.brief import generate_brief
-
-        if state.running:
-            return JSONResponse({"status": "busy"}, status_code=409)
-
-        async def go():
-            client = ChatRouter(settings)
-            try:
-                return await generate_brief(db, client, force=True)
-            finally:
-                await client.aclose()
-
-        result = await go()
-        return result
-
-    @app.post("/api/feedback/{item_id}")
-    async def api_feedback(item_id: int, kind: str = Query("useful"), note: str = Query("")):
-        allowed = {"irrelevant", "misleading", "duplicate", "useful", "stale"}
-        if kind not in allowed:
-            raise HTTPException(400, "unknown feedback kind")
-        exists = db.one("SELECT id FROM items WHERE id=?", (item_id,))
-        if not exists:
-            raise HTTPException(404, "no such item")
-        db.execute(
-            "INSERT INTO feedback (item_id, kind, note, created_at) VALUES (?,?,?,?)",
-            (item_id, kind, note[:240], iso(utcnow())),
-        )
-        if kind == "irrelevant":
+        @app.post("/api/save/{item_id}")
+        async def api_save(item_id: int):
+            exists = db.one("SELECT id FROM items WHERE id=?", (item_id,))
+            if not exists:
+                raise HTTPException(404, "no such item")
+            row = db.one("SELECT item_id FROM saved WHERE item_id=?", (item_id,))
+            if row:
+                db.execute("DELETE FROM saved WHERE item_id=?", (item_id,))
+                return {"saved": False}
             db.execute(
-                "UPDATE items SET relevant=0, relevance_reason=?, relevance_score=0 WHERE id=?",
-                ("user marked irrelevant", item_id),
+                "INSERT INTO saved (item_id, saved_at) VALUES (?,?)", (item_id, iso(utcnow()))
             )
-        elif kind == "stale":
-            db.execute(
-                "UPDATE items SET freshness_status='stale' WHERE id=?",
-                (item_id,),
-            )
-        return {"ok": True, "kind": kind}
+            return {"saved": True}
 
-    @app.post("/api/sources/{key}/mute")
-    async def api_mute_source(key: str, muted: int = Query(1)):
-        src = db.one("SELECT key FROM sources WHERE key=?", (key,))
-        if not src:
-            raise HTTPException(404, "no such source")
-        existing = db.one(
-            "SELECT id FROM source_controls WHERE source_key=? AND category=''", (key,)
-        )
-        now = iso(utcnow())
-        if existing:
-            db.execute(
-                "UPDATE source_controls SET muted=?, updated_at=? WHERE id=?",
-                (1 if muted else 0, now, existing["id"]),
-            )
-        else:
-            db.execute(
-                "INSERT INTO source_controls (source_key, category, muted, paused, updated_at) "
-                "VALUES (?,?,?,?,?)",
-                (key, "", 1 if muted else 0, 0, now),
-            )
-        return {"ok": True, "key": key, "muted": bool(muted)}
+        @app.post("/api/brief/regenerate")
+        async def api_brief_regenerate():
+            from ..enrich.chat import ChatRouter
+            from ..trends.brief import generate_brief
 
-    @app.post("/refresh")
-    async def refresh_form(request: Request):
-        if not state.running:
-            asyncio.create_task(_do_run())
-        referer = request.headers.get("referer", "/")
-        return RedirectResponse(referer, status_code=303)
+            if state.running:
+                return JSONResponse({"status": "busy"}, status_code=409)
+
+            async def go():
+                client = ChatRouter(settings)
+                try:
+                    return await generate_brief(db, client, force=True)
+                finally:
+                    await client.aclose()
+
+            result = await go()
+            return result
+
+        @app.post("/api/feedback/{item_id}")
+        async def api_feedback(item_id: int, kind: str = Query("useful"), note: str = Query("")):
+            allowed = {"irrelevant", "misleading", "duplicate", "useful", "stale"}
+            if kind not in allowed:
+                raise HTTPException(400, "unknown feedback kind")
+            exists = db.one("SELECT id FROM items WHERE id=?", (item_id,))
+            if not exists:
+                raise HTTPException(404, "no such item")
+            db.execute(
+                "INSERT INTO feedback (item_id, kind, note, created_at) VALUES (?,?,?,?)",
+                (item_id, kind, note[:240], iso(utcnow())),
+            )
+            if kind == "irrelevant":
+                db.execute(
+                    "UPDATE items SET relevant=0, relevance_reason=?, relevance_score=0 WHERE id=?",
+                    ("user marked irrelevant", item_id),
+                )
+            elif kind == "stale":
+                db.execute(
+                    "UPDATE items SET freshness_status='stale' WHERE id=?",
+                    (item_id,),
+                )
+            return {"ok": True, "kind": kind}
+
+        @app.post("/api/sources/{key}/mute")
+        async def api_mute_source(key: str, muted: int = Query(1)):
+            src = db.one("SELECT key FROM sources WHERE key=?", (key,))
+            if not src:
+                raise HTTPException(404, "no such source")
+            existing = db.one(
+                "SELECT id FROM source_controls WHERE source_key=? AND category=''", (key,)
+            )
+            now = iso(utcnow())
+            if existing:
+                db.execute(
+                    "UPDATE source_controls SET muted=?, updated_at=? WHERE id=?",
+                    (1 if muted else 0, now, existing["id"]),
+                )
+            else:
+                db.execute(
+                    "INSERT INTO source_controls (source_key, category, muted, paused, updated_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (key, "", 1 if muted else 0, 0, now),
+                )
+            return {"ok": True, "key": key, "muted": bool(muted)}
+
+        @app.post("/refresh")
+        async def refresh_form(request: Request):
+            if not state.running:
+                asyncio.create_task(_do_run())
+            referer = request.headers.get("referer", "/")
+            return RedirectResponse(referer, status_code=303)
 
     return app
 
