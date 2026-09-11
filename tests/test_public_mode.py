@@ -57,8 +57,9 @@ PUBLIC_SURFACE = [
     "/api/research",
     "/static/app.js",
 ]
-# Tables a request could plausibly write. Counted before and after a read
-# sweep to show the public instance leaves the shared file alone.
+# The tables a request most plausibly writes. Not the snapshot itself — that
+# covers every table in the schema — but the floor it must contain, so an empty
+# snapshot cannot satisfy "nothing changed" by comparing equal to itself.
 COUNTED_TABLES = ("items", "saved", "feedback", "source_controls", "runs", "sources", "briefs")
 
 
@@ -93,10 +94,20 @@ def _seed(data_dir: Path) -> int:
 
 
 def _row_counts(data_dir: Path) -> dict[str, int]:
-    """Row counts read on a throwaway read-only connection."""
+    """Row counts for every table in the schema, on a throwaway read-only connection.
+
+    Every table rather than a hand-picked list: `rising_topics` on `/` and
+    `/api/rising` lives in the same module as `compute_daily_topics`, which
+    rewrites `topic_daily`, and a read path that started writing there — or to
+    `clusters`, `research` or `item_revisions` — would slip past a fixed sample.
+    """
     conn = sqlite3.connect(f"file:{data_dir / 'airesearch.db'}?mode=ro", uri=True)
     try:
-        return {t: conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in COUNTED_TABLES}
+        names = [
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        ]
+        return {t: conn.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0] for t in names}
     finally:
         conn.close()
 
@@ -233,10 +244,15 @@ class TestRouteSurface:
             assert public_client.get(path).status_code == 200, path
         assert public_client.get(f"/read/{item_id}").status_code == 200
 
-    @pytest.mark.parametrize("path", ["/read/not-an-int", "/story/not-an-int", "/adapt/not-an-int"])
+    @pytest.mark.parametrize(
+        "path",
+        ["/read/not-an-int", "/story/not-an-int", "/adapt/not-an-int",
+         "/api/research/not-an-int"],
+    )
     def test_public_keeps_the_id_routes(self, public_client: TestClient, path):
         # 422 means the route matched and rejected the id; 404 would mean the
         # route is gone. Both read as "not 200", so only the code separates them.
+        # A seeded row would not do instead: /api/research/1 is 404 either way.
         assert public_client.get(path).status_code == 422
 
 
@@ -257,6 +273,8 @@ class TestNoStartupWrites:
 
     def test_public_startup_and_reads_change_no_rows(self, data_dir: Path):
         before = _row_counts(data_dir)
+        # A snapshot that read nothing would compare equal to itself.
+        assert set(COUNTED_TABLES) <= set(before)
         with TestClient(create_app(_settings(data_dir, public=True))) as c:
             for path in PUBLIC_SURFACE:
                 c.get(path)
@@ -371,6 +389,12 @@ class TestMarkup:
         assert 'class="save' in private_client.get(f"/read/{item_id}").text
 
 
+# The three nav targets public mode does not register. Clause 6 removes their
+# tabs from the markup; the keyboard shortcuts are the same affordance in a
+# second delivery vehicle, and they navigate rather than write.
+UNREGISTERED_NAV_TARGETS = ("/saved", "/sources", "/runs")
+
+
 class TestClientScript:
     """Clause 8: the script ships no POST that the public flag has not gated."""
 
@@ -385,7 +409,10 @@ class TestClientScript:
         helper = js.index("function post(")
         call = js.index('method: "POST"')
         assert helper < call
-        assert "PUBLIC" in js[helper:call]
+        # The guard itself, not the bare identifier: `if (!PUBLIC) return …`
+        # would leave the *private* instance unable to save and still contain
+        # "PUBLIC" here.
+        assert "if (PUBLIC) return" in js[helper:call]
 
     @pytest.mark.parametrize(
         "url", ["/api/save/", "/api/feedback/", "/api/brief/regenerate", "/api/refresh"]
@@ -394,6 +421,16 @@ class TestClientScript:
         js = APP_JS.read_text(encoding="utf-8")
         assert js.count(f'"{url}') == 1
         assert js[: js.index(f'"{url}')].rstrip().endswith("post(")
+
+    def test_app_js_keyboard_shortcuts_skip_the_unregistered_pages(self):
+        js = APP_JS.read_text(encoding="utf-8")
+        for path in UNREGISTERED_NAV_TARGETS:
+            lines = [ln for ln in js.splitlines() if f'"{path}"' in ln]
+            # One mention, and it is the private-only branch of the shortcut
+            # map. Dropping the gate, inverting it, or adding a second
+            # unconditional mention each fail one of these two.
+            assert len(lines) == 1, (path, lines)
+            assert lines[0].strip().startswith("if (!PUBLIC)"), (path, lines[0])
 
 
 DEPLOYMENT_DOCS = ["README.md", "DEPLOYMENT.md", ".env.example", "docker-compose.yml"]

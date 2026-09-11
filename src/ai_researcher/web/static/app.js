@@ -284,11 +284,16 @@
   if (verbose || wasRunning) fetchStatus();
 
   /* ── keyboard shortcuts ────────────────────────────────────── */
+  /* The map mirrors the rendered nav. /saved, /sources and /runs are not
+     registered on the public instance, so their keys are added only when this
+     one is private — otherwise b, h and r would navigate straight into a 404. */
+  var GO = { d: "/", f: "/feed", s: "/search", a: "/adapt" };
+  if (!PUBLIC) { GO.b = "/saved"; GO.h = "/sources"; GO.r = "/runs"; }
+
   document.addEventListener("keydown", function (ev) {
     var typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
     if (typing || ev.metaKey || ev.ctrlKey || ev.altKey) return;
-    var go = { d: "/", f: "/feed", s: "/search", b: "/saved", a: "/adapt", h: "/sources", r: "/runs" };
-    if (go[ev.key]) { location.href = go[ev.key]; return; }
+    if (GO[ev.key]) { location.href = GO[ev.key]; return; }
     if (ev.key === "/") {
       ev.preventDefault();
       var box = document.querySelector('input[type=search]');
