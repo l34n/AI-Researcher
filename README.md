@@ -390,8 +390,8 @@ AIR_PUBLIC_MODE=1 ai-researcher serve --port 8898
 
 That instance serves Dashboard, Firehose, Search and Adapt and nothing else.
 It asks for no token even when `AIR_ACCESS_TOKEN` is set, answers 403 to any
-method but GET, does not register `/saved`, `/sources`, `/runs`, `/health` or
-any write endpoint, and renders no Refresh, save, feedback or Regenerate
+method but GET, does not register `/saved`, `/sources`, `/runs`, `/health`,
+`/api/status` or any write endpoint, and renders no Refresh, save, feedback or Regenerate
 control. No visitor action adds or changes a row: the public process does not
 ingest, does not sync the source catalog at startup, and schedules no refresh,
 whatever `AIR_AUTO_REFRESH_MIN` says.
