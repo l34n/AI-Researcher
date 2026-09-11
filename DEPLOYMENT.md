@@ -134,8 +134,8 @@ AIR_PUBLIC_MODE=1 ai-researcher serve --port 8898
 # → http://<host>:8898   no token, read-only HTTP surface
 ```
 
-It exposes Dashboard, Firehose, Search and Adapt; `/saved`, `/sources`,
-`/runs`, `/health` and every write endpoint are unregistered, any non-GET is
+It exposes Dashboard, Firehose, Search and Adapt; `/saved`, `/sources`, `/runs`,
+`/health`, `/api/status` and every write endpoint are unregistered, any non-GET is
 403, and no visitor action adds or changes a row — no catalog sync at startup,
 no scheduled ingest, no user-initiated write. Only the private process
 ingests, so `AIR_AUTO_REFRESH_MIN` stays where it is.
