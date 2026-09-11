@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Install the dashboard and its hourly ingest as systemd --user units.
+# Install the dashboard, the public read-only instance and the hourly ingest
+# as systemd --user units.
 # User services, not system ones: everything lives in your home directory and
 # needs no root.
 set -euo pipefail
@@ -27,13 +28,14 @@ fi
 # %h expands to the *service* home, which is what we want, but the units also
 # hardcode the project as ~/AI-Researcher. Rewrite if it lives elsewhere.
 mkdir -p "$UNIT_DIR"
-for unit in ai-researcher.service ai-researcher-ingest.service ai-researcher-ingest.timer; do
+for unit in ai-researcher.service ai-researcher-public.service ai-researcher-ingest.service ai-researcher-ingest.timer; do
   sed "s|%h/AI-Researcher|$PROJECT_DIR|g" "$PROJECT_DIR/systemd/$unit" > "$UNIT_DIR/$unit"
   echo "  installed $UNIT_DIR/$unit"
 done
 
 systemctl --user daemon-reload
 systemctl --user enable --now ai-researcher.service
+systemctl --user enable --now ai-researcher-public.service
 systemctl --user enable --now ai-researcher-ingest.timer
 
 # Without lingering, user services stop at logout and never start at boot.
@@ -45,11 +47,17 @@ fi
 
 PORT="$(grep -E '^AIR_PORT=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d= -f2)"
 PORT="${PORT:-8899}"
+# The public port is pinned by the unit's ExecStart, not by .env; read it back
+# from there so the two never drift.
+PUBLIC_PORT="$(awk -F'--port ' '/^ExecStart=/ {print $2}' "$PROJECT_DIR/systemd/ai-researcher-public.service")"
+PUBLIC_PORT="${PUBLIC_PORT:-8898}"
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 
 echo
 echo "  dashboard : http://localhost:$PORT"
 [[ -n "$IP" ]] && echo "  on LAN    : http://$IP:$PORT"
+echo "  public    : http://localhost:$PUBLIC_PORT   (read-only, no token)"
+[[ -n "$IP" ]] && echo "  on LAN    : http://$IP:$PUBLIC_PORT"
 echo
 echo "  status    : systemctl --user status ai-researcher"
 echo "  logs      : journalctl --user -u ai-researcher -f"
