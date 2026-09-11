@@ -36,7 +36,9 @@ Then install it as a background service:
 ./scripts/install-systemd.sh
 ```
 
-That runs the dashboard continuously and ingests once an hour.
+That runs the dashboard continuously, ingests once an hour, and brings up the
+read-only public instance on port 8898 as `ai-researcher-public.service` (see
+"Public instance" below).
 
 ## Docker
 
@@ -409,6 +411,22 @@ database. Take a backup you would be willing to restore before you expose port
 The private instance is unchanged: keep it on its own port with its token,
 its controls and its ingest. Set `AIR_PUBLIC_MODE` per process, never in the
 shared `.env` — a value there would disarm the private dashboard too.
+
+**As a service.** `./scripts/install-systemd.sh` installs and enables
+`systemd/ai-researcher-public.service` alongside the dashboard unit, so the
+public instance also survives logout and starts at boot:
+
+```bash
+systemctl --user status ai-researcher-public
+journalctl --user -u ai-researcher-public -f
+systemctl --user disable --now ai-researcher-public   # take the public port down
+```
+
+The unit carries `Environment=AIR_PUBLIC_MODE=1` and `--port 8898` itself — a
+real environment variable beats `.env`, and the flag beats `AIR_PORT` — so the
+two instances share one `.env` without either reaching into the other's
+settings. If you do not want the public port up at all, disable that unit; the
+dashboard and the ingest timer are unaffected.
 
 ## Tuning sources
 
