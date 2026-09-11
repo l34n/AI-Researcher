@@ -155,9 +155,26 @@ Set `AIR_PUBLIC_MODE` on that process alone. Putting it in the shared `.env`
 would make the private dashboard read-only as well. Under Docker Compose the
 same thing is `docker compose --profile public up -d`.
 
-`scripts/install-systemd.sh` in the repo installs a background service +
-hourly timer. Not enabled yet — wait until the ingest bug is resolved so
-the timer does not spin uselessly.
+As a systemd `--user` service that process is `systemd/ai-researcher-public.service`,
+which `scripts/install-systemd.sh` installs and enables next to the dashboard
+unit. It sets `Environment=AIR_PUBLIC_MODE=1` and appends `--port 8898` to
+`ExecStart`, which is how one `.env` serves both instances: a real environment
+variable beats `.env`, and the CLI flag beats `AIR_PORT=8899`. Everything else,
+the hardening block included, matches the dashboard unit.
+
+```bash
+systemctl --user status ai-researcher-public
+journalctl --user -u ai-researcher-public -f
+systemctl --user disable --now ai-researcher-public   # close the public port
+```
+
+Enabling that unit is the act of exposing 8898, with the database consequences
+above, so back up before the first start and take the port down by disabling
+the unit, not by editing `.env`.
+
+`scripts/install-systemd.sh` in the repo installs those services + the hourly
+timer. Not enabled yet — wait until the ingest bug is resolved so the timer
+does not spin uselessly.
 
 ## Switching between Ollama and OpenRouter (APE-708)
 
