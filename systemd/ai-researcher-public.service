@@ -1,0 +1,35 @@
+[Unit]
+Description=AI Researcher public instance (read-only surface)
+Documentation=file:%h/AI-Researcher/README.md#public-instance-read-only-surface
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=%h/AI-Researcher
+# A real environment variable, not .env: _load_dotenv only sets keys absent
+# from os.environ, so this turns public mode on for this process alone. In the
+# shared .env it would disarm the private dashboard too.
+Environment=AIR_PUBLIC_MODE=1
+# --port beats .env's AIR_PORT=8899 (cmd_serve takes `args.port or settings.port`),
+# which is what keeps the two instances off each other's port. AIR_HOST=0.0.0.0
+# is inherited deliberately: this instance is LAN-reachable like the private one.
+ExecStart=%h/AI-Researcher/.venv/bin/ai-researcher serve --port 8898
+Restart=on-failure
+RestartSec=10
+
+# Ollama can be slow to answer during a model load; don't kill mid-generation.
+TimeoutStopSec=30
+
+# Modest hardening. The service only needs its own directory and the network.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/AI-Researcher/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target
