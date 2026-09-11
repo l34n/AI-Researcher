@@ -12,6 +12,7 @@ private-mode reading that shows the affordance is still there by default.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import timedelta
 from pathlib import Path
@@ -281,3 +282,89 @@ class TestNoStartupWrites:
         app = create_app(_settings(data_dir, public=False))
         with TestClient(app):
             assert app.state.refresh_task is not None
+
+
+# Clause 6: every affordance that writes, as it appears in the served HTML.
+WRITE_AFFORDANCES = (
+    'id="refresh"',
+    'id="verbose-ingest"',
+    'id="ingest-status"',
+    'class="save',
+    'class="fb',
+    'href="/saved"',
+    'href="/sources"',
+    'href="/runs"',
+)
+# Clause 7: operational counters the public topbar drops, and the ones it keeps.
+OPERATIONAL_COUNTERS = (
+    'data-stat="sources_ok"',
+    'data-stat="sources_total"',
+    'id="lastrun"',
+    'id="statusdot"',
+)
+KEPT_COUNTERS = (
+    'data-stat="items_24h"',
+    'data-stat="stories_today"',
+    'data-stat="research_briefs"',
+)
+
+
+def _nav_targets(html: str) -> list[str]:
+    """The hrefs inside the topbar nav, in order."""
+    nav = html.split('<nav class="tabs">', 1)[1].split("</nav>", 1)[0]
+    return re.findall(r'href="([^"]+)"', nav)
+
+
+class TestMarkup:
+    """Clauses 6, 7 and the flag half of 8, read off the served HTML."""
+
+    @pytest.mark.parametrize("path", ["/", "/feed"])
+    def test_public_markup_drops_every_write_affordance(self, public_client: TestClient, path):
+        html = public_client.get(path).text
+        for needle in WRITE_AFFORDANCES + ("brief-regen",):
+            assert needle not in html, needle
+
+    def test_private_markup_keeps_every_write_affordance(self, private_client: TestClient):
+        dashboard = private_client.get("/").text
+        feed = private_client.get("/feed").text
+        for needle in WRITE_AFFORDANCES:
+            assert needle in dashboard, needle
+            assert needle in feed, needle
+        # The Regenerate form lives on the dashboard alone.
+        assert "brief-regen" in dashboard
+
+    def test_public_markup_nav_is_the_four_read_tabs(self, public_client: TestClient):
+        assert _nav_targets(public_client.get("/").text) == ["/", "/feed", "/search", "/adapt"]
+
+    def test_private_markup_nav_keeps_every_tab(self, private_client: TestClient):
+        assert _nav_targets(private_client.get("/").text) == [
+            "/", "/feed", "/search", "/saved", "/adapt", "/sources", "/runs",
+        ]
+
+    def test_public_markup_topbar_drops_the_operational_counters(self, public_client: TestClient):
+        html = public_client.get("/").text
+        for gone in OPERATIONAL_COUNTERS:
+            assert gone not in html, gone
+        for kept in KEPT_COUNTERS:
+            assert kept in html, kept
+
+    def test_private_markup_topbar_keeps_the_operational_counters(self, private_client: TestClient):
+        html = private_client.get("/").text
+        for needle in OPERATIONAL_COUNTERS + KEPT_COUNTERS:
+            assert needle in html, needle
+
+    def test_public_markup_flags_the_body(self, public_client: TestClient):
+        assert "data-public" in public_client.get("/").text
+
+    def test_private_markup_leaves_the_body_unflagged(self, private_client: TestClient):
+        assert "data-public" not in private_client.get("/").text
+
+    def test_public_markup_read_page_has_no_save_button(
+        self, public_client: TestClient, item_id: int
+    ):
+        assert 'class="save' not in public_client.get(f"/read/{item_id}").text
+
+    def test_private_markup_read_page_keeps_the_save_button(
+        self, private_client: TestClient, item_id: int
+    ):
+        assert 'class="save' in private_client.get(f"/read/{item_id}").text

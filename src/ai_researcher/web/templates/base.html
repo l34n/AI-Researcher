@@ -7,29 +7,38 @@
 <link rel="stylesheet" href="/static/app.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📡</text></svg>">
 </head>
-<body>
+<body{% if PUBLIC_MODE %} data-public="1"{% endif %}>
 <header class="topbar">
   <div class="brand">
+    {% if not PUBLIC_MODE %}
     <span class="dot {{ 'busy' if run_state.running else ('bad' if stats.sources_failing > stats.sources_ok else '') }}"
           id="statusdot" title="{{ 'ingest running' if run_state.running else stats.last_run_status }}"></span>
+    {% endif %}
     AI&nbsp;Researcher
   </div>
   <nav class="tabs">
     <a href="/"        class="{{ 'on' if page=='dashboard' }}">Dashboard</a>
     <a href="/feed"    class="{{ 'on' if page=='feed' }}">Firehose</a>
     <a href="/search"  class="{{ 'on' if page=='search' }}">Search</a>
+    {% if not PUBLIC_MODE %}
     <a href="/saved"   class="{{ 'on' if page=='saved' }}">Saved{% if stats.saved %} ({{ stats.saved }}){% endif %}</a>
+    {% endif %}
     <a href="/adapt"   class="{{ 'on' if page=='adapt' }}">Adapt{% if stats.research_briefs %} ({{ stats.research_briefs }}){% endif %}</a>
+    {% if not PUBLIC_MODE %}
     <a href="/sources" class="{{ 'on' if page=='sources' }}">Sources</a>
     <a href="/runs"    class="{{ 'on' if page=='runs' }}">Runs</a>
+    {% endif %}
   </nav>
   <div class="topstats" id="topstats">
     <span><b data-stat="items_24h">{{ stats.items_24h }}</b> items/24h</span>
     <span><b data-stat="stories_today">{{ stats.stories_today }}</b> stories</span>
     <span title="Implementation briefs"><b data-stat="research_briefs">{{ stats.research_briefs }}</b> ready</span>
+    {% if not PUBLIC_MODE %}
     <span title="{{ stats.sources_failing }} failing"><b data-stat="sources_ok">{{ stats.sources_ok }}</b>/<span data-stat="sources_total">{{ stats.sources_total }}</span> sources</span>
     <span id="lastrun">{{ stats.last_run }}</span>
+    {% endif %}
   </div>
+  {% if not PUBLIC_MODE %}
   <label class="verbose-toggle" title="Show live ingest stage while refreshing">
     <input type="checkbox" id="verbose-ingest" role="switch">
     <span class="switch" aria-hidden="true"></span>
@@ -38,13 +47,16 @@
   <button class="btn" id="refresh" {{ 'disabled' if run_state.running }}>
     {{ 'Refreshing…' if run_state.running else 'Refresh' }}
   </button>
+  {% endif %}
 </header>
+{% if not PUBLIC_MODE %}
 <div class="ingest-status" id="ingest-status" hidden>
   <span class="ingest-stage" id="ingest-stage">idle</span>
   <span class="ingest-detail" id="ingest-detail">Waiting for a refresh…</span>
   <span class="ingest-current" id="ingest-current"></span>
   <span class="ingest-counts" id="ingest-counts"></span>
 </div>
+{% endif %}
 
 <main class="wrap">{% block content %}{% endblock %}</main>
 <div class="toast" id="toast"></div>
