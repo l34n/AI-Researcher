@@ -74,7 +74,8 @@ in-process timer):
 AIR_AUTO_REFRESH_MIN=0 docker compose --profile worker up -d --build
 ```
 
-**Read-only public instance** on port 8898, same volume, no token, no writes:
+**Public instance** on port 8898 — same volume, no token, no write endpoints,
+and the same database file opened read-write (see "Public instance" below):
 
 ```bash
 docker compose --profile public up -d --build
@@ -378,7 +379,7 @@ fine. To require a token, set `AIR_ACCESS_TOKEN` in `.env` and append
 Do not port-forward this to the public internet as-is. Put it behind a
 reverse proxy with real authentication, or reach it over Tailscale/WireGuard.
 
-### Public read-only instance
+### Public instance (read-only surface)
 
 `AIR_PUBLIC_MODE=1` runs the same package as a second process, on its own
 port, against the same SQLite file:
@@ -390,9 +391,20 @@ AIR_PUBLIC_MODE=1 ai-researcher serve --port 8898
 That instance serves Dashboard, Firehose, Search and Adapt and nothing else.
 It asks for no token even when `AIR_ACCESS_TOKEN` is set, answers 403 to any
 method but GET, does not register `/saved`, `/sources`, `/runs`, `/health` or
-any write endpoint, renders no Refresh, save, feedback or Regenerate control,
-and writes nothing to the database — it neither syncs the source catalog at
-startup nor schedules ingest, whatever `AIR_AUTO_REFRESH_MIN` says.
+any write endpoint, and renders no Refresh, save, feedback or Regenerate
+control. No visitor action adds or changes a row: the public process does not
+ingest, does not sync the source catalog at startup, and schedules no refresh,
+whatever `AIR_AUTO_REFRESH_MIN` says.
+
+**Read-only is the HTTP surface, not the database.** The public process opens
+the private instance's SQLite file read-write, and it does write to that file.
+Serving normally it leaves a 4152-byte WAL beside a database file that is
+otherwise byte-identical. Started against an older schema it may migrate the
+file in place: it drops `items_fts`, recreates it with a different tokenizer,
+migrates columns and rebuilds the full-text index. There is one file, so a
+migration the public process performs is a migration of the private instance's
+database. Take a backup you would be willing to restore before you expose port
+8898.
 
 The private instance is unchanged: keep it on its own port with its token,
 its controls and its ingest. Set `AIR_PUBLIC_MODE` per process, never in the
