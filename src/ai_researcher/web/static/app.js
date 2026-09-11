@@ -204,7 +204,15 @@
     if (lastRun && stats.last_run) lastRun.textContent = stats.last_run;
   }
 
+  // The public instance does not register the status endpoint: it carries the
+  // operational counters and live run state the public topbar drops. The gate
+  // below is the function's first statement rather than a check at each call
+  // site, because `verbose` is read from localStorage and not from the absent
+  // toggle — a same-origin deployment can still arrive here with verbose true.
+  // It resolves null, the same thing the catch below hands back, so every
+  // caller is unchanged.
   function fetchStatus() {
+    if (PUBLIC) return Promise.resolve(null);
     return fetch("/api/status")
       .then(function (r) { return r.json(); })
       .then(function (d) {

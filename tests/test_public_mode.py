@@ -437,6 +437,34 @@ class TestClientScript:
         assert js.count(f'"{url}') == 1
         assert js[: js.index(f'"{url}')].rstrip().endswith("post(")
 
+    def test_public_served_script_gates_its_only_status_request(
+        self, public_client: TestClient
+    ):
+        # The bytes the server hands a public visitor, not the file on disk:
+        # this is the script that actually runs against the public port.
+        js = public_client.get("/static/app.js").text
+        assert js.count("/api/status") == 1
+        url = js.index("/api/status")
+        start = js.index("function fetchStatus(")
+        assert start < url, "the only mention of the endpoint must be inside fetchStatus"
+        # The guard is the function body's first statement, so no path into
+        # fetchStatus reaches the URL while PUBLIC is true. Gating the call
+        # sites instead would not do: `verbose` is read from localStorage
+        # (not from the absent toggle), so a same-origin deployment can still
+        # arrive here with verbose true.
+        body = js[js.index("{", start) + 1:]
+        assert body.lstrip().startswith("if (PUBLIC) return"), body.lstrip()[:80]
+
+    def test_private_served_script_keeps_the_same_status_gate(
+        self, public_client: TestClient, private_client: TestClient
+    ):
+        # One script, one gate, decided at runtime by the body flag — not two
+        # builds. If these ever differ, the public guard stopped being the
+        # thing under test.
+        assert public_client.get("/static/app.js").text == private_client.get(
+            "/static/app.js"
+        ).text
+
     def test_app_js_keyboard_shortcuts_skip_the_unregistered_pages(self):
         js = APP_JS.read_text(encoding="utf-8")
         for path in UNREGISTERED_NAV_TARGETS:
