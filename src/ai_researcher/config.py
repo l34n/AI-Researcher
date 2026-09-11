@@ -51,6 +51,13 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
+def _env_bool(key: str, default: bool = False) -> bool:
+    raw = _env(key).lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes")
+
+
 def _env_float(key: str, default: float) -> float:
     try:
         return float(_env(key) or default)
@@ -64,6 +71,9 @@ class Settings:
     port: int = 8899
     data_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "data")
     access_token: str = ""
+    # Read-only public instance: no token, no writes, no controls. Meant for a
+    # second process on the same SQLite file, not for the private dashboard.
+    public_mode: bool = False
 
     ollama_host: str = "http://localhost:11434"
     ollama_chat_model: str = ""
@@ -121,6 +131,7 @@ class Settings:
             port=_env_int("AIR_PORT", 8899),
             data_dir=Path(_env("AIR_DATA_DIR", str(PROJECT_ROOT / "data"))).expanduser(),
             access_token=_env("AIR_ACCESS_TOKEN"),
+            public_mode=_env_bool("AIR_PUBLIC_MODE"),
             ollama_host=_env("OLLAMA_HOST", "http://localhost:11434").rstrip("/"),
             ollama_chat_model=_env("OLLAMA_CHAT_MODEL"),
             ollama_embed_model=_env("OLLAMA_EMBED_MODEL"),
