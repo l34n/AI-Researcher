@@ -31,9 +31,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ROOT / "config" / "sources.yaml"
 APP_JS = ROOT / "src" / "ai_researcher" / "web" / "static" / "app.js"
 
-# The private instance's own pages and its every write endpoint. The public
-# instance registers none of them.
-PRIVATE_PAGES = ["/saved", "/sources", "/runs", "/health"]
+# The private instance's own pages, its operational endpoints and its every
+# write endpoint. The public instance registers none of them. `/api/status`
+# is here rather than on the read surface because it carries the same
+# operational counters clause 7 strips from the public topbar.
+PRIVATE_PAGES = ["/saved", "/sources", "/runs", "/health", "/api/status"]
 WRITE_ENDPOINTS = [
     "/api/refresh",
     "/api/save/1",
@@ -51,7 +53,6 @@ PUBLIC_SURFACE = [
     "/adapt",
     "/healthz",
     "/readyz",
-    "/api/status",
     "/api/stories",
     "/api/rising",
     "/api/research",
@@ -182,7 +183,7 @@ class TestAccess:
     """Clause 1: the token guard is skipped, even when a token is configured."""
 
     def test_public_needs_no_token(self, public_client: TestClient):
-        for path in ("/", "/feed", "/search", "/adapt", "/api/status"):
+        for path in ("/", "/feed", "/search", "/adapt"):
             assert public_client.get(path).status_code == 200, path
 
     def test_private_still_enforces_its_token(self, data_dir: Path):
@@ -243,6 +244,20 @@ class TestRouteSurface:
         for path in PUBLIC_SURFACE:
             assert public_client.get(path).status_code == 200, path
         assert public_client.get(f"/read/{item_id}").status_code == 200
+
+    def test_public_does_not_serve_the_status_endpoint(self, public_client: TestClient):
+        # Named on its own as well as through PRIVATE_PAGES: it is the one
+        # route this clause removes, and a 404 here is the whole of it.
+        assert public_client.get("/api/status").status_code == 404
+
+    def test_private_still_serves_the_status_endpoint(self, private_client: TestClient):
+        response = private_client.get("/api/status")
+        assert response.status_code == 200
+        payload = response.json()
+        assert set(payload) == {"stats", "run"}
+        # The counters themselves, not just the envelope: dropping the route
+        # from public mode must not thin what private mode reports.
+        assert {"items_total", "sources_ok", "sources_failing"} <= set(payload["stats"])
 
     @pytest.mark.parametrize(
         "path",

@@ -411,9 +411,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "chat_default": settings.ollama_chat_model or settings.ollama_default_chat_model,
             }
 
-    @app.get("/api/status")
-    async def api_status():
-        return {"stats": Q.dashboard_stats(db), "run": state.status}
+    # Operational counters and live run state — the private `saved` count,
+    # sources_ok/sources_failing, last run and in-flight ingest progress.
+    # Clause 7 already strips these from the public topbar, so serving them
+    # on the public port would hand back what the markup withholds.
+    if not public:
+        @app.get("/api/status")
+        async def api_status():
+            return {"stats": Q.dashboard_stats(db), "run": state.status}
 
     @app.get("/api/stories")
     async def api_stories(day: str | None = None, limit: int = 40):
