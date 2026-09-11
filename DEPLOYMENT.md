@@ -122,6 +122,27 @@ ai-researcher doctor
 ai-researcher sources
 ```
 
+### Public read-only instance
+
+One codebase, two processes, one SQLite file. The private dashboard above is
+unchanged; the public one is the same package with `AIR_PUBLIC_MODE=1` on a
+second port:
+
+```bash
+cd /home/ebg/l34n && source .venv/bin/activate
+AIR_PUBLIC_MODE=1 ai-researcher serve --port 8898
+# → http://<host>:8898   no token, read-only
+```
+
+It exposes Dashboard, Firehose, Search and Adapt; `/saved`, `/sources`,
+`/runs`, `/health` and every write endpoint are unregistered, any non-GET is
+403, and it writes nothing — no catalog sync at startup, no scheduled ingest.
+Only the private process ingests, so `AIR_AUTO_REFRESH_MIN` stays where it is.
+
+Set `AIR_PUBLIC_MODE` on that process alone. Putting it in the shared `.env`
+would make the private dashboard read-only as well. Under Docker Compose the
+same thing is `docker compose --profile public up -d`.
+
 `scripts/install-systemd.sh` in the repo installs a background service +
 hourly timer. Not enabled yet — wait until the ingest bug is resolved so
 the timer does not spin uselessly.

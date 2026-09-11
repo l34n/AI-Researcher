@@ -18,6 +18,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from ai_researcher.config import Settings
@@ -393,3 +394,31 @@ class TestClientScript:
         js = APP_JS.read_text(encoding="utf-8")
         assert js.count(f'"{url}') == 1
         assert js[: js.index(f'"{url}')].rstrip().endswith("post(")
+
+
+DEPLOYMENT_DOCS = ["README.md", "DEPLOYMENT.md", ".env.example", "docker-compose.yml"]
+
+
+class TestDeploymentShape:
+    """One codebase, two processes — documented where an operator will look."""
+
+    @pytest.mark.parametrize("name", DEPLOYMENT_DOCS)
+    def test_each_deployment_doc_names_the_flag(self, name):
+        assert "AIR_PUBLIC_MODE" in (ROOT / name).read_text(encoding="utf-8")
+
+    def test_compose_runs_the_public_instance_on_its_own_profile(self):
+        compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+        public = compose["services"]["public"]
+        assert "public" in public.get("profiles", [])
+        assert public["environment"]["AIR_PUBLIC_MODE"] == "1"
+        assert public["environment"]["AIR_AUTO_REFRESH_MIN"] == "0"
+        # Same SQLite file as the default service, which is the whole point.
+        assert any(str(v).endswith(":/data") for v in public["volumes"])
+        assert any(str(v).endswith(":/data") for v in compose["services"]["ai-researcher"]["volumes"])
+
+    def test_compose_cannot_flip_the_default_service_public(self):
+        compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+        # Deliberately absent from the shared x-air-env anchor: a stray
+        # AIR_PUBLIC_MODE in .env must not disarm the private dashboard.
+        assert "AIR_PUBLIC_MODE" not in compose["services"]["ai-researcher"]["environment"]
+        assert "AIR_PUBLIC_MODE" not in compose["services"]["worker"]["environment"]

@@ -74,6 +74,12 @@ in-process timer):
 AIR_AUTO_REFRESH_MIN=0 docker compose --profile worker up -d --build
 ```
 
+**Read-only public instance** on port 8898, same volume, no token, no writes:
+
+```bash
+docker compose --profile public up -d --build
+```
+
 **No GPU / cloud-only.** Set `GEMINI_API_KEY` or `OPENROUTER_API_KEY` in `.env`
 and skip Ollama. Clustering falls back to hashed TF-IDF; the dashboard still
 works.
@@ -371,6 +377,26 @@ fine. To require a token, set `AIR_ACCESS_TOKEN` in `.env` and append
 
 Do not port-forward this to the public internet as-is. Put it behind a
 reverse proxy with real authentication, or reach it over Tailscale/WireGuard.
+
+### Public read-only instance
+
+`AIR_PUBLIC_MODE=1` runs the same package as a second process, on its own
+port, against the same SQLite file:
+
+```bash
+AIR_PUBLIC_MODE=1 ai-researcher serve --port 8898
+```
+
+That instance serves Dashboard, Firehose, Search and Adapt and nothing else.
+It asks for no token even when `AIR_ACCESS_TOKEN` is set, answers 403 to any
+method but GET, does not register `/saved`, `/sources`, `/runs`, `/health` or
+any write endpoint, renders no Refresh, save, feedback or Regenerate control,
+and writes nothing to the database — it neither syncs the source catalog at
+startup nor schedules ingest, whatever `AIR_AUTO_REFRESH_MIN` says.
+
+The private instance is unchanged: keep it on its own port with its token,
+its controls and its ingest. Set `AIR_PUBLIC_MODE` per process, never in the
+shared `.env` — a value there would disarm the private dashboard too.
 
 ## Tuning sources
 
