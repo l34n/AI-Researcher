@@ -368,3 +368,28 @@ class TestMarkup:
         self, private_client: TestClient, item_id: int
     ):
         assert 'class="save' in private_client.get(f"/read/{item_id}").text
+
+
+class TestClientScript:
+    """Clause 8: the script ships no POST that the public flag has not gated."""
+
+    def test_app_js_reads_the_public_flag(self):
+        assert "data-public" in APP_JS.read_text(encoding="utf-8")
+
+    def test_app_js_has_one_post_and_it_is_gated(self):
+        js = APP_JS.read_text(encoding="utf-8")
+        # One chokepoint, so a handler re-wired by accident still cannot reach
+        # the network on the public instance.
+        assert js.count('method: "POST"') == 1
+        helper = js.index("function post(")
+        call = js.index('method: "POST"')
+        assert helper < call
+        assert "PUBLIC" in js[helper:call]
+
+    @pytest.mark.parametrize(
+        "url", ["/api/save/", "/api/feedback/", "/api/brief/regenerate", "/api/refresh"]
+    )
+    def test_app_js_reaches_each_write_endpoint_only_through_the_helper(self, url):
+        js = APP_JS.read_text(encoding="utf-8")
+        assert js.count(f'"{url}') == 1
+        assert js[: js.index(f'"{url}')].rstrip().endswith("post(")

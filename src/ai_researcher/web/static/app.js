@@ -2,6 +2,16 @@
 (function () {
   "use strict";
 
+  /* The read-only public instance renders body[data-public]. It also renders
+     none of the elements the write handlers bind to, so this flag is the
+     second line: every write goes through post(), which refuses there. */
+  var PUBLIC = document.body.hasAttribute("data-public");
+
+  function post(url) {
+    if (PUBLIC) return Promise.reject(new Error("read-only public instance"));
+    return fetch(url, { method: "POST" });
+  }
+
   var toastEl = document.getElementById("toast");
   var toastTimer = null;
 
@@ -36,12 +46,13 @@
       }
       return;
     }
+    if (PUBLIC) return;
     var btn = ev.target.closest(".save");
     if (!btn) return;
     ev.preventDefault();
     var id = btn.dataset.id;
     btn.disabled = true;
-    fetch("/api/save/" + id, { method: "POST" })
+    post("/api/save/" + id)
       .then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
@@ -57,12 +68,13 @@
   });
 
   document.addEventListener("click", function (ev) {
+    if (PUBLIC) return;
     var btn = ev.target.closest(".fb");
     if (!btn) return;
     ev.preventDefault();
     var id = btn.dataset.id;
     var kind = btn.dataset.kind;
-    fetch("/api/feedback/" + id + "?kind=" + encodeURIComponent(kind), { method: "POST" })
+    post("/api/feedback/" + id + "?kind=" + encodeURIComponent(kind))
       .then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
@@ -72,12 +84,12 @@
   });
 
   var regen = document.getElementById("regen-brief");
-  if (regen) {
+  if (regen && !PUBLIC) {
     regen.addEventListener("click", function (ev) {
       ev.preventDefault();
       regen.disabled = true;
       regen.textContent = "Regenerating…";
-      fetch("/api/brief/regenerate", { method: "POST" })
+      post("/api/brief/regenerate")
         .then(function (r) { return r.json(); })
         .then(function () {
           toast("Brief regenerated — reloading");
@@ -229,7 +241,7 @@
     pollTimer = setInterval(fetchStatus, ms);
   }
 
-  if (refreshBtn) {
+  if (refreshBtn && !PUBLIC) {
     refreshBtn.addEventListener("click", function () {
       refreshBtn.disabled = true;
       refreshBtn.textContent = "Refreshing…";
@@ -245,7 +257,7 @@
           active: [],
         }, true);
       }
-      fetch("/api/refresh", { method: "POST" })
+      post("/api/refresh")
         .then(function (r) {
           if (r.status === 409) { toast("A refresh is already running"); }
           else { toast("Ingest started — this can take a few minutes"); }
