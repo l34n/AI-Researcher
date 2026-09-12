@@ -327,8 +327,13 @@ nav.tabs a.on::after {
   padding: 10px 26px 10px 14px; border-bottom: 1px solid var(--border);
   font: 700 10.5px var(--mono); text-transform: uppercase; letter-spacing: .18em;
   color: var(--cyan); text-shadow: var(--glow-soft);
-  /* pre-composited over --panel-hi, the panel gradient behind this strip */
-  background: linear-gradient(180deg, #111d38, var(--panel-hi));
+  /* Pre-composited over --panel-hi, the panel gradient behind this strip, and
+     the wash is 2.5% cyan rather than the 5% it started as. At 5% the stop is
+     #111d38, and --text-dim on it measures 4.49 under the 25% overlay this page
+     is sized against: the trailing meta span in every panel header is
+     --text-dim, so the lightest ground on the page was the one ground below AA.
+     Halved, the lift still reads and the stop clears the floor by 0.12. */
+  background: linear-gradient(180deg, #121833, var(--panel-hi));
 }
 .panel > h3::before { content: "▍"; color: var(--magenta); text-shadow: var(--glow-magenta); }
 .panel > h3 > span:last-child:not(:first-child) { margin-left: auto; color: var(--text-dim); }
