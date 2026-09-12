@@ -792,3 +792,199 @@ def test_prose_rule_scan_is_not_vacuous(rules):
     missing = [anchor for anchor in PROSE_ANCHORS if anchor not in seen]
     assert not missing, f"the prose classifier no longer sees: {missing}"
     assert len(prose) > 30
+
+
+# ── 6. the ground model: every layer, not only down to the first opaque one ──
+#
+# A background stack paints bottom layer first. The reader above stops at the
+# first opaque layer it finds and calls that the ground, which is right about
+# what seals the stack and wrong about what the browser paints: a translucent
+# wash sitting *above* that opaque layer still lands on the glyph. `.panel`
+# under a 10% white wash measures a real 4.25 and the first-opaque read scores
+# it 4.93 — a number no browser will produce. The model below composites the
+# whole stack instead, and the opaque layer keeps its one real job: sealing the
+# stack so the colour does not depend on what is behind the element.
+
+# Colour keywords a background layer can name that contribute nothing.
+_TRANSPARENT = ("transparent", "none")
+
+# Functions that paint an image rather than name a colour. A layer built from
+# one of these is read by the colour terms inside it.
+_IMAGE_FN = re.compile(r"\b(?:repeating-)?(?:linear|radial|conic)-gradient\b|\burl\b|\bimage-set\b", re.I)
+
+
+def _top_level_terms(value: str) -> list[str]:
+    """A value's space-separated terms, keeping each function call whole."""
+    terms, depth, cur = [], 0, ""
+    for ch in value:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch.isspace() and depth == 0:
+            if cur.strip():
+                terms.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        terms.append(cur.strip())
+    return terms
+
+
+def _paints(term: str, tokens: dict[str, str]) -> list[tuple[str, tuple[float, float, float], float]]:
+    """Every colour a term can put on a pixel, as (label, rgb, alpha).
+
+    A flat colour contributes one. A gradient contributes one per stop, because
+    all of its stops are painted somewhere in the box and a stylesheet cannot
+    know which one a glyph lands on — the same reading `_opaque_stops` already
+    uses. `transparent` is a stop like any other: it is how a radial wash says
+    "nothing here", and dropping it would leave the model unable to see that a
+    corner wash does not reach the middle of the page.
+    """
+    term = term.strip()
+    if term.lower() in _TRANSPARENT:
+        return [("transparent", (0.0, 0.0, 0.0), 0.0)]
+    resolved = _resolve(term, tokens)
+    if resolved != term:
+        return _paints(resolved, tokens)
+    if _HEX_ONLY.match(term):
+        return [(term, _hex_rgb(term), 1.0)]
+    if re.fullmatch(r"(?:rgba?|hsla?)\([^)]*\)", term, re.I):
+        return [(term, rgb, alpha) for rgb, alpha in _rgba_terms(term)] or []
+    if _IMAGE_FN.search(term):
+        out: list[tuple[str, tuple[float, float, float], float]] = []
+        inner = term[term.index("(") + 1 : term.rindex(")")]
+        for part in _split_top(inner):
+            for word in _top_level_terms(part):
+                out.extend(_paints(word, tokens))
+        return out
+    return []
+
+
+def _layers(value: str, tokens: dict[str, str]) -> list[list[tuple[str, tuple, float]]]:
+    """A background value as paint alternatives per layer, bottom layer last.
+
+    The final comma-separated layer may carry the background colour alongside
+    its image (`background: var(--bg) linear-gradient(...)`), and the colour is
+    painted under every image in the stack — so it is lifted out as its own
+    bottom layer rather than read as a sibling of the gradient above it.
+    """
+    out: list[list[tuple[str, tuple, float]]] = []
+    parts = _split_top(value)
+    for index, part in enumerate(parts):
+        terms = _top_level_terms(part)
+        colours, images = [], []
+        for term in terms:
+            if _IMAGE_FN.search(term):
+                images.append(term)
+            elif _paints(term, tokens):
+                colours.append(term)
+        if index == len(parts) - 1 and images and colours:
+            out.append([p for term in images for p in _paints(term, tokens)])
+            out.append([p for term in colours for p in _paints(term, tokens)])
+            continue
+        alternatives = [p for term in terms for p in _paints(term, tokens)]
+        if alternatives:
+            out.append(alternatives)
+    return out
+
+
+def _seal_index(layers) -> int | None:
+    """The lowest layer that is opaque on every alternative, if the stack has one.
+
+    Below that layer nothing shows through, so the stack's colour does not
+    depend on what is behind the element. A stack with no such layer borrows
+    its ground from the backdrop, which under an overlay extension is not a
+    colour this page controls or this model can name.
+    """
+    for index in range(len(layers) - 1, -1, -1):
+        if layers[index] and all(alpha >= 1.0 for _label, _rgb, alpha in layers[index]):
+            return index
+    return None
+
+
+def _grounds(value: str, tokens: dict[str, str]) -> list[tuple[str, tuple[float, float, float]]] | None:
+    """Every colour a sealed background stack can paint, or None if it is unsealed.
+
+    Every alternative of every layer above the seal is composited down onto it,
+    so a wash the first-opaque read skipped is in the answer.
+    """
+    layers = _layers(value, tokens)
+    seal = _seal_index(layers)
+    if seal is None:
+        return None
+    stack = layers[: seal + 1]
+    grounds = [("", base_rgb) for _label, base_rgb, _a in stack[-1]]
+    for layer in reversed(stack[:-1]):
+        nxt = []
+        for label, under in grounds:
+            for name, rgb, alpha in layer:
+                over = tuple(rgb[i] * alpha + under[i] * (1 - alpha) for i in range(3))
+                nxt.append((f"{label}+{name}" if label else name, over))
+        grounds = nxt
+    seen, unique = set(), []
+    for label, rgb in grounds:
+        key = tuple(round(c, 3) for c in rgb)
+        if key not in seen:
+            seen.add(key)
+            unique.append((label or "sealed", rgb))
+    return unique
+
+
+def test_the_ground_model_composites_a_sealed_wash(tokens):
+    """A wash above the opaque layer is in the ground, not skipped with it.
+
+    The number in this check is the one the first-opaque read got wrong, kept
+    as a literal so the shortcut cannot come back quietly: `.panel` under a 10%
+    white wash is 4.25 against --text-dim, and reading only as far as the
+    opaque layer scores the same stack 4.93.
+    """
+    sealed = "#0b0b1e linear-gradient(rgba(255,255,255,.10), rgba(255,255,255,.10))"
+    grounds = _grounds(sealed, tokens)
+    assert grounds is not None, "an opaque bottom layer must seal the stack"
+    assert len(grounds) == 1, f"a flat wash over a flat colour is one ground: {grounds}"
+    _label, ground = grounds[0]
+    assert [round(c) for c in ground] == [35, 35, 52], (
+        f"the wash above the opaque layer was dropped: {[round(c) for c in ground]}"
+    )
+
+    dim = _hex_rgb(tokens["--text-dim"])
+    composited = _contrast(_over_black(dim, EXTENSION_BLACK_ALPHA), _over_black(ground, EXTENSION_BLACK_ALPHA))
+    skipped = _contrast(
+        _over_black(dim, EXTENSION_BLACK_ALPHA),
+        _over_black(_hex_rgb("#0b0b1e"), EXTENSION_BLACK_ALPHA),
+    )
+    assert round(composited, 2) == 4.25, f"--text-dim on the composited wash is 4.25, got {composited:.2f}"
+    assert round(skipped, 2) == 4.93, f"the first-opaque read scores the same stack 4.93, got {skipped:.2f}"
+    assert composited < skipped, "compositing the wash must cost contrast, never add it"
+
+
+def test_sealed_wash_reading_is_load_bearing_in_this_stylesheet(rules, tokens):
+    """The stylesheet really does seal washes, so the model is not theory.
+
+    Without this the check above could pass against a stylesheet that never
+    stacks anything, and the first-opaque shortcut would cost nothing to
+    restore. Each sealed stack is also required to read lighter than its seal:
+    a wash that composites to exactly its own base is a wash the reader lost.
+    """
+    sealed = []
+    for condition, sel, decls in rules:
+        for prop in ("background", "background-color", "background-image"):
+            value = decls.get(prop)
+            if not value:
+                continue
+            layers = _layers(value, tokens)
+            seal = _seal_index(layers)
+            if seal is None or seal == 0:
+                continue  # nothing is stacked above the seal
+            grounds = _grounds(value, tokens)
+            assert grounds, f"{sel} seals its stack but reads no ground"
+            base = max(_luminance(rgb) for _l, rgb, _a in layers[seal])
+            lightest = max(_luminance(rgb) for _l, rgb in grounds)
+            assert lightest > base, (
+                f"{_where(condition)} {sel} stacks {seal} layer(s) over its seal and still "
+                f"reads as the seal alone: the wash was dropped"
+            )
+            sealed.append(f"{_where(condition)} {sel}".strip())
+    assert sealed, "no rule in app.css stacks a wash over an opaque layer; this model is untested by it"
