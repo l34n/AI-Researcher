@@ -129,8 +129,21 @@ def _split_top(value: str, sep: str = ",") -> list[str]:
     return [p.strip() for p in parts]
 
 
-def _rules(css: str, media: str = "") -> list[tuple[str, str, dict[str, str]]]:
-    """Every style rule as (media prelude, selector, declarations)."""
+# At-rules whose blocks hold ordinary style rules the browser may apply. Their
+# contents are read like any other rule; only the condition they arrive under
+# differs. `@keyframes` and `@font-face` are not here: their blocks are frames
+# and descriptors, not rules.
+_GROUP_AT_RULE = re.compile(r"@(media|supports|container|layer|scope)\b", re.I)
+
+
+def _rules(css: str, condition: str = "") -> list[tuple[str, str, dict[str, str]]]:
+    """Every style rule as (condition prelude, selector, declarations).
+
+    A rule inside `@supports`, `@layer` or `@container` is a rule this page can
+    paint, so it is read like a rule inside `@media`. Reading only `@media` left
+    every other group block invisible to every check in this module — a deleted
+    layer written back inside one would have been seen by nothing here.
+    """
     out: list[tuple[str, str, dict[str, str]]] = []
     i, n = 0, len(css)
     while i < n:
@@ -146,12 +159,24 @@ def _rules(css: str, media: str = "") -> list[tuple[str, str, dict[str, str]]]:
                 depth -= 1
             k += 1
         block = css[open_at + 1 : k - 1]
-        if prelude.startswith("@media"):
-            out.extend(_rules(block, prelude[len("@media") :].strip()))
+        group = _GROUP_AT_RULE.match(prelude)
+        if group:
+            # `@media` keeps its bare condition text, which is what the
+            # accessibility test matches on; any other group keeps its keyword,
+            # so a failure names the block the rule actually sits in.
+            inner = prelude[len(group.group(0)) :].strip() if group.group(1).lower() == "media" else prelude
+            out.extend(_rules(block, f"{condition} and {inner}" if condition else inner))
         elif not prelude.startswith("@"):
-            out.append((media, prelude, _decls(block)))
+            out.append((condition, prelude, _decls(block)))
         i = k
     return out
+
+
+def _where(condition: str) -> str:
+    """A rule's condition, labelled the way the stylesheet writes it."""
+    if not condition:
+        return ""
+    return condition if condition.lstrip().startswith("@") else f"@media {condition}"
 
 
 def _decls(block: str) -> dict[str, str]:
@@ -182,10 +207,10 @@ def _overrides(block_selector: str, base_selector: str) -> bool:
 
 
 def _rules_targeting(rules, selectors) -> list[str]:
-    """Every rule, in any media, whose selector addresses one of `selectors`."""
+    """Every rule, under any condition, whose selector addresses one of `selectors`."""
     return [
-        f"@media {media} {sel}" if media else sel
-        for media, sel, _decls in rules
+        f"{_where(condition)} {sel}" if condition else sel
+        for condition, sel, _decls in rules
         if any(_selector_matches(sel, wanted) for wanted in selectors)
     ]
 
@@ -195,6 +220,20 @@ def _rule_for(rules, selector: str, media: str = "") -> dict[str, str]:
     merged: dict[str, str] = {}
     for rule_media, sel, decls in rules:
         if rule_media == media and _selector_matches(sel, selector):
+            merged.update(decls)
+    return merged
+
+
+def _decls_anywhere(rules, selector: str) -> dict[str, str]:
+    """Declarations for `selector` under any condition, later rules winning.
+
+    For the layers this page must not paint, a condition is not an excuse: a
+    rule inside a group block is one the browser can apply, so the worst of
+    what the stylesheet says about a layer is what the model has to assume.
+    """
+    merged: dict[str, str] = {}
+    for _condition, sel, decls in rules:
+        if _selector_matches(sel, selector):
             merged.update(decls)
     return merged
 
@@ -337,14 +376,40 @@ def tokens(rules) -> dict[str, str]:
     return {k: v for k, v in _rule_for(rules, ":root").items() if k.startswith("--")}
 
 
+# A length that is zero, in any of the spellings the cascade accepts.
+_ZERO_LENGTH = re.compile(r"[+-]?0(?:\.0+)?(?:px|pt|em|rem|vh|vw|%)?\Z", re.I)
+
+
+def _covers_its_box(decls: dict[str, str]) -> bool:
+    """Whether a rule pins all four edges to zero: the shape of a layer laid
+    across everything behind it.
+
+    Read in every spelling that means the same thing — `inset: 0`, `inset: 0px`,
+    `inset: 0 0 0 0`, and the four longhand offsets — because the string `inset:
+    0` is a house style, not a property of the layer. Matching only that one
+    spelling let the deleted layers come back written the ordinary way and be
+    counted as nothing at all. What is still outside the shape: a layer sized
+    with viewport units instead of pinned edges, and anything a script paints.
+    """
+    inset = decls.get("inset")
+    if inset is not None:
+        parts = inset.split()
+        return bool(parts) and len(parts) <= 4 and all(_ZERO_LENGTH.fullmatch(p) for p in parts)
+    edges = [decls.get(edge) for edge in ("top", "right", "bottom", "left")]
+    return all(edge is not None and _ZERO_LENGTH.fullmatch(edge.strip()) for edge in edges)
+
+
 def _full_viewport_layers(rules) -> set[str]:
-    """Selectors that paint a fixed layer across the whole viewport."""
+    """Selectors that paint a fixed layer across the whole viewport.
+
+    Under any condition, not only in the base cascade: a layer inside a group
+    block is one the page can still paint.
+    """
     return {
         sel
-        for media, sel, decls in rules
-        if not media
-        and decls.get("position") == "fixed"
-        and decls.get("inset") == "0"
+        for _condition, sel, decls in rules
+        if decls.get("position") == "fixed"
+        and _covers_its_box(decls)
         and any(decls.get(p) for p in ("background", "background-color", "background-image"))
     }
 
@@ -369,7 +434,7 @@ def page_overlay_factor(rules) -> float:
     column_z = float(column_z) if column_z and column.get("position") not in (None, "static") else None
     factor = 1.0
     for layer in PAGE_OVERLAY_LAYERS:
-        decls = _rule_for(rules, layer)
+        decls = _decls_anywhere(rules, layer)
         if not decls:
             continue  # app.css does not paint this layer at all
         layer_z = float(decls.get("z-index", 0))
@@ -396,8 +461,8 @@ def test_no_crt_layers_remain(css, rules):
     assert not revived, f"app.css still addresses a removed CRT layer: {revived}"
 
     blended = [
-        f"@media {media} {sel}" if media else sel
-        for media, sel, decls in rules
+        f"{_where(condition)} {sel}" if condition else sel
+        for condition, sel, decls in rules
         if decls.get("mix-blend-mode", "normal") != "normal"
     ]
     assert not blended, f"app.css still blends its own layers: {blended}"
@@ -548,15 +613,15 @@ def _bar_overlay_factor(rules, bar: str) -> float:
     """
     factor = 1.0
     bar_z = float(_rule_for(rules, bar).get("z-index", 0))
-    for media, sel, decls in rules:
-        if media or decls.get("inset") != "0":
+    for _condition, sel, decls in rules:
+        if decls.get("position") not in ("absolute", "fixed") or not _covers_its_box(decls):
             continue
         if not any(part.startswith(f"{bar}::") for part in _selector_parts(sel)):
             continue
         alphas = _translucent_alphas(decls.get("background", ""))
         factor *= 1.0 - (max(alphas) if alphas else 0.0)
     for sel in _full_viewport_layers(rules):
-        decls = _rule_for(rules, sel)
+        decls = _decls_anywhere(rules, sel)
         if float(decls.get("z-index", 0)) >= bar_z:
             alphas = _translucent_alphas(decls.get("background", ""))
             factor *= 1.0 - (max(alphas) if alphas else 0.0)
@@ -699,7 +764,7 @@ def test_prose_is_opaque(rules, tokens):
     """No prose rule borrows its contrast from opacity, blending or translucency."""
     offenders = []
     for media, sel, decls in _prose_rules(rules):
-        where = f"@media {media} " if media else ""
+        where = f"{_where(media)} " if media else ""
         if "opacity" in decls:
             try:
                 if float(decls["opacity"]) < 1:
