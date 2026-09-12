@@ -1329,7 +1329,17 @@ def _covers(outer: str, inner: str) -> bool:
     is not modelled -- a `>` in `outer` against a descendant in `inner` would be
     read as covering when it is not -- which is sound for this stylesheet, where
     the block writes `>` only where the base rule it overrides writes it too.
+
+    Pseudo-elements must match. A pseudo-element is its own box with its own
+    declaration block, so a ground set on `nav.tabs a.on` never overrides the one
+    on `nav.tabs a.on::after` and is not competing with it in the cascade. Ink is
+    a different question -- what `::before` paints does land on the originating
+    element's ground -- and `_also_matches` stays permissive for that reason.
     """
+    outer_pseudo = frozenset(s for s in _key(outer) if s.startswith("::"))
+    inner_pseudo = frozenset(s for s in _key(inner) if s.startswith("::"))
+    if outer_pseudo != inner_pseudo:
+        return False
     return _key(outer) <= _key(inner) and _subsequence(_ancestor_keys(outer), _ancestor_keys(inner))
 
 
@@ -1390,3 +1400,177 @@ def test_a11y_not_vacuous_no_block_rule_restates_what_it_overrides(rules, tokens
         "these rules say nothing, so the block's promise to flatten the surface is "
         "kept in form only:\n" + "\n".join(sorted(set(vacuous)))
     )
+
+
+# ── 9. the block's flattening has to win the cascade ─────────────────────
+#
+# Ticket 01's Risks 5 named this for `.badge.c-*` and understated it: the block
+# flattened `.badge` at one class while nine category rules set the same property
+# at two, and the same defeat hit five `.pill` variants and
+# `.ingest-status.live .ingest-stage` at three. Every one of those block
+# declarations was dead on arrival, and nothing said so -- a presence scan sees
+# the rule and cannot see that the cascade throws it away.
+#
+# So specificity is compared here rather than assumed, both ways round. A
+# surface whose base ground still composites must have a block rule that covers
+# it and wins; and a block rule that declares a ground must win against every
+# base rule that sets one on an element it covers, or it is a promise the
+# cascade does not keep.
+
+_FUNCTIONAL_PSEUDO = re.compile(r"^:(?:not|is|has|matches|any)\(", re.I)
+
+
+def _specificity(selector: str) -> tuple[int, int, int]:
+    """(ids, classes, types) for one complex selector, per Selectors 4.
+
+    `:is()`, `:not()` and `:has()` take the specificity of their most specific
+    argument; `:where()` takes none; `*` adds nothing.
+    """
+    ids = classes = types = 0
+    for compound in _compounds(selector):
+        for simple in _SIMPLE.findall(compound):
+            lowered = simple.lower()
+            if simple.startswith("::"):
+                types += 1
+            elif simple.startswith("#"):
+                ids += 1
+            elif simple.startswith((".", "[")):
+                classes += 1
+            elif simple.startswith(":"):
+                if lowered.startswith(":where("):
+                    continue
+                match = _FUNCTIONAL_PSEUDO.match(simple)
+                if match:
+                    best = (0, 0, 0)
+                    for argument in _split_top(simple[len(match.group(0)) : -1]):
+                        best = max(best, _specificity(argument))
+                    ids, classes, types = ids + best[0], classes + best[1], types + best[2]
+                else:
+                    classes += 1
+            elif simple != "*":
+                types += 1
+    return ids, classes, types
+
+
+def _important(value: str) -> bool:
+    return value.rstrip().endswith("!important")
+
+
+def _wins(winner, loser, prop: str) -> bool:
+    """Whether `winner` beats `loser` for `prop`: importance, then specificity, then order."""
+    w_index, _wc, w_sel, w_decls = winner
+    l_index, _lc, l_sel, l_decls = loser
+    w_bang, l_bang = _important(w_decls.get(prop, "")), _important(l_decls.get(prop, ""))
+    if w_bang != l_bang:
+        return w_bang
+    w_spec, l_spec = _specificity(w_sel), _specificity(l_sel)
+    if w_spec != l_spec:
+        return w_spec > l_spec
+    return w_index > l_index
+
+
+def _is_one_flat_colour(value: str, tokens: dict[str, str]) -> bool:
+    """Whether a background is a single opaque colour -- nothing left to flatten."""
+    layers = _layers(value, tokens)
+    return len(layers) == 1 and len(layers[0]) == 1 and layers[0][0][2] >= 1.0
+
+
+def _background_property(decls: dict[str, str]) -> str:
+    for prop in ("background", "background-color", "background-image"):
+        if decls.get(prop):
+            return prop
+    return ""
+
+
+def test_a11y_specificity_every_flattening_rule_wins_the_cascade(rules, tokens):
+    """The block's grounds beat the base rules they override, and cover what composites."""
+    # The comparison is only as good as the counter. A `_specificity` that
+    # returned a constant would make every claim below true and every defeat
+    # invisible, so the selectors this stylesheet actually turns on are pinned
+    # here -- including the three shapes that caused the defeats: a variant class,
+    # a descendant of a compound, and a pseudo-class on a type.
+    assert _specificity(".badge") == (0, 1, 0)
+    assert _specificity(".badge.c-research") == (0, 2, 0)
+    assert _specificity("a.pill:hover") == (0, 2, 1)
+    assert _specificity(".ingest-status.live .ingest-stage") == (0, 3, 0)
+    assert _specificity("nav.tabs a.on") == (0, 2, 2)
+    assert _specificity(".panel > h3") == (0, 1, 1)
+    assert _specificity(".panel > h3 > span:last-child:not(:first-child)") == (0, 3, 2)
+    assert _specificity("body") == (0, 0, 1)
+    assert _specificity("::selection") == (0, 0, 1)
+    assert _specificity(":where(.a.b) .c") == (0, 1, 0), ":where() contributes no specificity"
+
+    # And the comparison that uses it, on the three axes in the order the cascade
+    # applies them. A `_wins` that answered yes to everything would make the
+    # whole check below assert nothing at all, which is the failure mode this
+    # criterion is most exposed to.
+    def rule(index, selector, value):
+        return (index, "", selector, {"background": value})
+
+    assert _wins(rule(2, ".badge", "red"), rule(1, ".badge", "blue"), "background"), (
+        "equal specificity is decided by source order"
+    )
+    assert not _wins(rule(1, ".badge", "red"), rule(2, ".badge", "blue"), "background"), (
+        "an earlier rule does not beat a later one at equal specificity"
+    )
+    assert not _wins(rule(9, ".badge", "red"), rule(1, ".badge.c-x", "blue"), "background"), (
+        "source order does not rescue a less specific rule -- this is the F7 defeat"
+    )
+    assert _wins(rule(1, ".badge.c-x", "red"), rule(9, ".badge", "blue"), "background"), (
+        "higher specificity beats later source order"
+    )
+    assert _wins(rule(1, ".badge", "red !important"), rule(9, ".badge.c-x", "blue"), "background"), (
+        "importance outranks specificity"
+    )
+
+    block = [r for r in _a11y_rules(rules) if _declares_background(r[3])]
+    base = [r for r in _base_rules(rules) if _declares_background(r[3])]
+    assert block, "the accessibility block flattens no ground at all"
+
+    # Which surfaces still need flattening: a ground that carries text and is not
+    # already one opaque colour. Derived from the same ground model as the
+    # contrast check, so a surface cannot need flattening there and not here.
+    composites = [
+        (index, condition, subject, decls)
+        for index, condition, subject, decls, _ink in _text_grounds(rules, tokens)
+        if not condition and not _is_one_flat_colour(_background_value(decls), tokens)
+    ]
+    assert composites, "no base ground composites; this scan is vacuous"
+
+    uncovered = []
+    for rule in composites:
+        _i, _c, subject, decls = rule
+        prop = _background_property(decls)
+        winners = [
+            k for k in block if _covers(k[2], subject) and _wins(k, rule, prop)
+        ]
+        if not winners:
+            covering = [k[2] for k in block if _covers(k[2], subject)]
+            uncovered.append(
+                f"{subject} {_specificity(subject)} still composites and the block "
+                + (
+                    f"only offers {covering} which lose on specificity"
+                    if covering
+                    else "flattens it with nothing"
+                )
+            )
+
+    defeated = []
+    for rule in block:
+        _bi, condition, block_sel, block_decls = rule
+        prop = _background_property(block_decls)
+        for other in base:
+            _i, _c, base_sel, base_decls = other
+            if not _covers(block_sel, base_sel):
+                continue
+            if not _background_property(base_decls):
+                continue
+            if not _wins(rule, other, prop):
+                defeated.append(
+                    f"@media ({condition.splitlines()[0].strip()} ...) {block_sel} "
+                    f"{_specificity(block_sel)} loses to {base_sel} "
+                    f"{_specificity(base_sel)}, so its flattening never applies"
+                )
+
+    assert not uncovered, "\n".join(sorted(uncovered))
+    assert not defeated, "\n".join(sorted(set(defeated)))

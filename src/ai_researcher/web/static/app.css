@@ -748,25 +748,27 @@ button.fb:hover { color: var(--cyan); border-color: var(--cyan); }
 @media (prefers-contrast: more),
        (prefers-reduced-transparency: reduce),
        (forced-colors: active) {
-  body { background: var(--bg); }
-  .topbar { background: var(--bg-raise); backdrop-filter: none; }
-  .ingest-status { background: var(--bg-raise); }
+  /* What is left to flatten is the five grounds that still composite: the page
+     ground and the two bars stack a wash over an opaque layer, and the panels
+     and their headers are gradients. Each rule here beats every base rule that
+     sets that surface's background, which is the whole of what it claims.
 
+     Everything else this block used to list is gone, and the chrome washes
+     above are why. A badge, pill, chip, term, tab, button or stage ground is now
+     one opaque colour in the base cascade, so there is no compositing left for
+     a flattening rule to remove -- and the rules that claimed to remove it were
+     never doing so anyway: `.badge` at one class lost to nine `.badge.c-*` at
+     two, `.pill` lost to five variants and to `a.pill:hover`, and
+     `.ingest-stage` lost to `.ingest-status.live .ingest-stage` at three.
+     Raising them instead would have been worse than deleting them: a `.chip`
+     rule specific enough to beat `.chip.on` would strip the active chip's cyan
+     ground and leave its near-black ink stranded on a dark one. */
+  body { background: var(--bg); }
+  .topbar { background: var(--bg-raise); }
+  .ingest-status { background: var(--bg-raise); }
   .panel, .story { background: var(--panel); }
   .panel > h3 { background: var(--panel-hi); }
-  th { background: var(--panel-hi); }
 
-  /* `.item:hover`, `tr:hover td`, `.brief code`, `.empty code` and the form
-     controls used to be listed here re-declaring the exact value they were
-     overriding. Each of those grounds is already one flat opaque colour in the
-     base cascade, so the rule changed nothing and only made the block look like
-     it was covering the surface. There is nothing to flatten, so there is no
-     rule. */
-
-  .btn, .badge, .pill, .chip, .term, .ingest-stage { background: var(--bg-raise); }
-  .btn:hover, nav.tabs a:hover, nav.tabs a.on,
-  a.pill:hover, .chip:hover, .term:hover { background: var(--bg-raise); }
-  ::selection { background: var(--magenta); color: #12001a; }
-
+  /* Opacity composites, so it goes even where colour stays. */
   .brief hr, .brief h2::before, .brand::after, .chip .n { opacity: 1; }
 }
