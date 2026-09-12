@@ -988,3 +988,321 @@ def test_sealed_wash_reading_is_load_bearing_in_this_stylesheet(rules, tokens):
             )
             sealed.append(f"{_where(condition)} {sel}".strip())
     assert sealed, "no rule in app.css stacks a wash over an opaque layer; this model is untested by it"
+
+
+# ── 7. every ground that carries text, chrome included ──────────────────
+#
+# `PROSE_CONTAINER` is a hand-written list, so a container outside it could
+# paint a ground no check read, and the chrome grounds -- bars, tabs, badges,
+# pills, chips, terms -- were outside every oracle by construction. Deleting
+# the `.topbar` overrides from the accessibility block left the bar translucent
+# and every check green.
+#
+# The set of grounds is derived here instead: every rule that paints a
+# background, in any condition, on a box the stylesheet shows can hold a line
+# of text. Nothing is listed; `GROUND_ANCHORS` below is an anti-vacuity guard on
+# the derivation, not its input.
+#
+# What text lands on a ground is derived the same way -- the rule's own colour,
+# colours declared by rules that also match the element or descend from it, and
+# (only where the rule pins no colour of its own, so inheritance reaches it) the
+# page's three reading steps.
+#
+# The floor applies to the reading palette. Chrome chroma is outside it, and not
+# by oversight: under a 25% black multiply the WCAG flare term caps
+# `--violet` at 3.20, `--magenta` at 3.61 and `--red` at 3.58 against a ground
+# of *pure black* -- no ground this page or any other could paint brings those
+# three to 4.5, so gating them would be a demand on the overlay, not on app.css.
+# Their measured values are reported with the ticket rather than asserted here.
+# What is asserted for every text ground, chroma included, is that its colour is
+# determinate: the stack seals, so the ground does not depend on a backdrop that
+# under an overlay extension is not this page's to name.
+
+# Pseudo-elements that are text, or that style text, rather than a widget part a
+# UA paints. A ground on one of these carries text by definition; a ground on
+# `::-webkit-scrollbar-thumb` carries none and never can.
+TEXT_PSEUDO_ELEMENTS = (
+    "::selection",
+    "::first-line",
+    "::first-letter",
+    "::placeholder",
+    "::-webkit-input-placeholder",
+    "::marker",
+)
+
+# Declarations that typeset a box. A rule that sets any of them, or pads the box
+# out, is a rule about somewhere text goes.
+TYPESETTING = (
+    "font",
+    "font-size",
+    "font-family",
+    "font-weight",
+    "font-style",
+    "font-variant-numeric",
+    "line-height",
+    "letter-spacing",
+    "text-transform",
+    "text-align",
+    "text-overflow",
+    "white-space",
+)
+
+# Grounds that must stay inside the derivation. Not the input to it and not a
+# frozen count: a classifier quietly narrowed until it passes is what this has
+# to catch, and these are the surfaces F7 named -- the chrome that carries text
+# outside the reading column, plus the reading surfaces tickets 01 and 02 cover.
+GROUND_ANCHORS = (
+    ".topbar",
+    ".ingest-status",
+    ".badge",
+    ".pill",
+    ".chip",
+    ".term",
+    ".btn",
+    ".ingest-stage",
+    "nav.tabs a.on",
+    ".panel",
+    ".story",
+    ".panel > h3",
+    "::selection",
+)
+
+# Of those, the ones whose ink is the reading palette, so the 4.5 floor is
+# actually applied to them. A ground pinned to chroma -- `.ingest-stage`, an
+# active tab, a selection -- is reached and determinate but carries no reading
+# step, and the anchors above are what keep it reached. These are the ones a
+# narrowed ink derivation would quietly stop weighing, which is the other half
+# of the same hole: F7 was demonstrated by the bars staying translucent, and it
+# would be demonstrated just as well by the bars staying unweighed.
+READING_GROUND_ANCHORS = (
+    ".topbar",
+    ".ingest-status",
+    ".badge",
+    ".pill",
+    ".chip",
+    ".term",
+    ".btn",
+    ".panel",
+    ".story",
+    ".panel > h3",
+)
+
+
+def _compounds(selector: str) -> list[str]:
+    """One complex selector's compounds, outermost first."""
+    return [p for p in re.split(r"\s*[>+~]\s*|\s+", selector.strip()) if p]
+
+
+_SIMPLE = re.compile(
+    r"::[-\w]+(?:\([^)]*\))?"  # pseudo-element
+    r"|:[-\w]+(?:\([^)]*\))?"  # pseudo-class, arguments kept whole
+    r"|#[-\w]+"
+    r"|\.[-\w]+"
+    r"|\[[^\]]*\]"
+    r"|\*"
+    r"|^[-\w]+"
+)
+
+
+def _simples(compound: str) -> frozenset[str]:
+    return frozenset(_SIMPLE.findall(compound))
+
+
+def _key(selector: str) -> frozenset[str]:
+    """The simple selectors the subject of a complex selector must carry."""
+    compounds = _compounds(selector)
+    return _simples(compounds[-1]) if compounds else frozenset()
+
+
+def _ancestor_keys(selector: str) -> list[frozenset[str]]:
+    return [_simples(c) for c in _compounds(selector)[:-1]]
+
+
+def _subsequence(short: list[frozenset[str]], long: list[frozenset[str]]) -> bool:
+    """Whether every constraint in `short` appears, in order, inside `long`."""
+    i = 0
+    for want in short:
+        while i < len(long) and not want <= long[i]:
+            i += 1
+        if i == len(long):
+            return False
+        i += 1
+    return True
+
+
+def _also_matches(other: str, subject: str) -> bool:
+    """Whether `other` can style the very element `subject` styles.
+
+    `other` may be the same selector, a tighter variant of it (`.pill.v-skip`
+    beside `.pill`) or a looser one (`td` beside `tr:hover td`). What it may not
+    be is a different element.
+    """
+    if not (_key(subject) <= _key(other) or _key(other) <= _key(subject)):
+        return False
+    a, b = _ancestor_keys(other), _ancestor_keys(subject)
+    return _subsequence(a, b) or _subsequence(b, a)
+
+
+def _descends_from(other: str, subject: str) -> bool:
+    """Whether `other` styles something inside the box `subject` styles."""
+    return any(anc and anc <= _key(subject) for anc in _ancestor_keys(other))
+
+
+def _selector_rules(rules):
+    """Every rule split per selector, numbered in source order."""
+    out = []
+    for index, (condition, selector, decls) in enumerate(rules):
+        for part in sorted(_selector_parts(selector)):
+            out.append((index, condition, part, decls))
+    return out
+
+
+def _declares_background(decls: dict[str, str]) -> bool:
+    return any(decls.get(p) for p in ("background", "background-color", "background-image"))
+
+
+def _background_value(decls: dict[str, str]) -> str:
+    """The one value that decides the stack, longhands folded in below it."""
+    value = decls.get("background") or decls.get("background-color") or ""
+    image = decls.get("background-image")
+    if image and not decls.get("background"):
+        value = f"{image} {value}".strip() if value else image
+    return value
+
+
+def _holds_text(subject: str, decls: dict[str, str], all_rules) -> bool:
+    """Whether the stylesheet shows this box can hold a line of text.
+
+    Five ways it can, each read off declarations the stylesheet makes rather
+    than guessed from the name: the rule colours text; the box *is* text, being
+    a text-bearing pseudo-element; it is the page root, which holds everything;
+    the stylesheet writes rules for things inside it; or some rule that styles
+    the same element typesets or pads it.
+
+    What falls outside is the page's graphics -- a 7px status dot, a 4px meter
+    track, the gradient fill inside it, a scrollbar thumb. None of them is
+    named: each is excluded because no rule in app.css colours text in it,
+    typesets it, pads it or puts anything inside it.
+    """
+    if decls.get("content", "").strip() in ('""', "''"):
+        return False
+    if decls.get("color"):
+        return True
+    key = _key(subject)
+    if any(simple in TEXT_PSEUDO_ELEMENTS for simple in key):
+        return True
+    if key & {"body", "html", ":root"}:
+        return True
+    for _i, _c, other, other_decls in all_rules:
+        if _descends_from(other, subject):
+            return True
+        if _also_matches(other, subject) and (
+            any(prop in other_decls for prop in TYPESETTING)
+            or any(prop == "padding" or prop.startswith("padding-") for prop in other_decls)
+        ):
+            return True
+    return False
+
+
+def _ink_on(subject: str, all_rules, tokens) -> dict[str, str]:
+    """Every text colour that can land on this box's ground, as label -> colour.
+
+    A rule carrying its own background is skipped: it brings its own ground and
+    is measured there, so `.chip.on`'s near-black ink is never weighed against
+    the plain `.chip` wash it replaces.
+    """
+    found: dict[str, str] = {}
+    pinned = False
+    for _i, _c, other, other_decls in all_rules:
+        colour = other_decls.get("color")
+        if not colour:
+            continue
+        same = _also_matches(other, subject)
+        if same:
+            pinned = True
+        if not (same or _descends_from(other, subject)):
+            continue
+        if _declares_background(other_decls) and other != subject:
+            continue
+        literal = _resolve(colour.strip(), tokens)
+        if _HEX_ONLY.match(literal):
+            found[f"{other} ({colour.strip()})"] = literal
+    if not pinned:
+        # Nothing pins this box's colour, so the reading palette inherits into
+        # it -- every step of it, because which step lands where is the
+        # template's fact and not this stylesheet's.
+        for token in PROSE_TOKENS:
+            found[f"inherited {token}"] = tokens[token].strip()
+    return found
+
+
+def _paints_a_ground(value: str, tokens: dict[str, str]) -> bool:
+    """Whether a background value puts any colour down at all.
+
+    `background: none` and `background: transparent` clear a UA background
+    rather than paint one. Counting them as grounds would have demanded that
+    every bare `<button>` seal a stack it does not paint, while the ground its
+    text really lands on -- the panel, story or row containing it -- is already
+    weighed against the whole reading palette on its own rule.
+    """
+    layers = _layers(value, tokens)
+    return any(alpha > 0 for layer in layers for _label, _rgb, alpha in layer)
+
+
+def _text_grounds(rules, tokens):
+    """Every (rule, ground, ink) the page paints text on. The whole derivation."""
+    all_rules = _selector_rules(rules)
+    for index, condition, subject, decls in all_rules:
+        if not _declares_background(decls):
+            continue
+        if not _paints_a_ground(_background_value(decls), tokens):
+            continue
+        if not _holds_text(subject, decls, all_rules):
+            continue
+        yield index, condition, subject, decls, _ink_on(subject, all_rules, tokens)
+
+
+def test_all_text_grounds_clear_aa_under_the_extension_overlay(rules, tokens):
+    """Every ground under text is determinate, and clears AA for the reading palette."""
+    measured: dict[str, list[str]] = {}
+    reached: set[str] = set()
+    unsealed, failures = [], []
+
+    for _index, condition, subject, decls, ink in _text_grounds(rules, tokens):
+        reached.add(subject)
+        where = f"{_where(condition)} " if condition else ""
+        value = _background_value(decls)
+        grounds = _grounds(value, tokens)
+        if grounds is None:
+            unsealed.append(f"{where}{subject} -> {value}")
+            continue
+        for label, ground in grounds:
+            for ink_label, literal in ink.items():
+                fg = _hex_rgb(literal)
+                ratio = _contrast(
+                    _over_black(fg, EXTENSION_BLACK_ALPHA),
+                    _over_black(ground, EXTENSION_BLACK_ALPHA),
+                )
+                if literal not in {tokens[t].strip() for t in PROSE_TOKENS}:
+                    continue  # chrome chroma: measured for the record, not gated
+                measured.setdefault(subject, []).append(f"{ink_label} {ratio:.2f}")
+                if ratio < 4.5:
+                    failures.append(
+                        f"{where}{subject} ({label}): {ink_label} on "
+                        f"rgb({', '.join(f'{c:.0f}' for c in ground)}) is {ratio:.2f}, needs 4.5"
+                    )
+
+    assert not unsealed, (
+        "a ground under text takes its colour from whatever is behind it, which under an "
+        "overlay extension is not this page:\n" + "\n".join(sorted(unsealed))
+    )
+    assert not failures, "\n".join(sorted(failures))
+
+    unreached = [anchor for anchor in GROUND_ANCHORS if anchor not in reached]
+    assert not unreached, f"the ground derivation no longer reaches: {unreached}"
+
+    unweighed = [anchor for anchor in READING_GROUND_ANCHORS if anchor not in measured]
+    assert not unweighed, (
+        f"these grounds are reached but no reading step is weighed against them any "
+        f"more, so the 4.5 floor no longer applies to them: {unweighed}"
+    )

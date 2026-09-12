@@ -114,7 +114,12 @@ a { color: var(--accent); text-decoration: none; transition: color .12s, text-sh
 a:hover { text-decoration: none; color: #6ff8ff; text-shadow: var(--glow-soft); }
 h1,h2,h3,h4 { margin: 0; font-weight: 700; line-height: 1.3; }
 
-::selection { background: rgba(255,46,151,.35); color: #fff; }
+/* Pre-composited, like every other ground under text: a 35% magenta wash took
+   its colour from whatever prose surface the selection happened to cross, and
+   `::selection` is the one ground that cannot seal a stack of its own — the
+   cascade allows it a colour and no background image. #651c53 is that wash over
+   --panel-hi, the lightest surface it can land on. */
+::selection { background: #651c53; color: #fff; }
 
 /* Neon-on-void makes default focus rings vanish; keyboard nav must stay visible. */
 :focus-visible {
@@ -126,8 +131,13 @@ h1,h2,h3,h4 { margin: 0; font-weight: 700; line-height: 1.3; }
   position: sticky; top: 0; z-index: 50;
   display: flex; align-items: center; gap: 20px;
   padding: 0 20px; height: 54px;
-  background: linear-gradient(180deg, rgba(8,8,24,.94), rgba(6,6,18,.86));
-  backdrop-filter: blur(14px) saturate(1.3);
+  /* The bar's own gradient, now sealed on --bg rather than left to take its
+     colour from whatever scrolls under it. The bar carries the page's scale
+     text and sits outside the reading column, so what it composites to has to
+     be a colour this stylesheet names. `backdrop-filter` went with the seal: at
+     .94/.86 it was transmitting almost nothing, and behind an opaque layer it
+     transmits none. */
+  background: var(--bg) linear-gradient(180deg, rgba(8,8,24,.94), rgba(6,6,18,.86));
   border-bottom: 1px solid var(--border);
   box-shadow: 0 1px 0 rgba(0,240,255,.28), 0 8px 30px rgba(0,0,0,.6);
 }
@@ -163,10 +173,10 @@ nav.tabs a {
 }
 nav.tabs a:hover {
   color: var(--cyan); border-color: rgba(0,240,255,.28);
-  background: rgba(0,240,255,.06); text-shadow: none;
+  background: #0a192c; text-shadow: none;  /* 6% cyan over --panel */
 }
 nav.tabs a.on {
-  color: var(--cyan); background: rgba(0,240,255,.10);
+  color: var(--cyan); background: #0a2234;  /* 10% cyan over --panel */
   border-color: rgba(0,240,255,.45);
   box-shadow: inset 0 0 12px rgba(0,240,255,.14), 0 0 10px rgba(0,240,255,.18);
 }
@@ -185,15 +195,21 @@ nav.tabs a.on::after {
   text-shadow: var(--glow-soft);
 }
 
+/* Every chrome wash below is pre-composited over --panel rather than left as an
+   rgba() tint. A tint takes its colour from whatever is behind it, and chrome
+   moves: a badge sits on a panel, a chip on the page ground, a tab on the bar.
+   Under an overlay extension "whatever is behind it" is no longer only this
+   page, so every ground that carries text states its own colour. The hue is
+   unchanged -- each comment names the wash and the surface it was mixed over. */
 .btn {
-  border: 1px solid var(--border-hi); background: rgba(177,74,255,.10);
+  border: 1px solid var(--border-hi); background: #1c1134;  /* 10% violet over --panel */
   color: var(--text); padding: 6px 15px; border-radius: var(--radius-sm);
   font: 700 11.5px var(--mono); letter-spacing: .12em; text-transform: uppercase;
   cursor: pointer; white-space: nowrap; transition: all .14s;
 }
 .btn:hover {
   border-color: var(--cyan); color: var(--cyan);
-  background: rgba(0,240,255,.12); box-shadow: 0 0 14px rgba(0,240,255,.3);
+  background: #0a2639; box-shadow: 0 0 14px rgba(0,240,255,.3);  /* 12% cyan over --panel */
 }
 .btn:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
 .btn.primary {
@@ -243,7 +259,7 @@ nav.tabs a.on::after {
   position: sticky; top: 54px; z-index: 49;
   display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
   padding: 8px 20px;
-  background: linear-gradient(180deg, rgba(8,8,24,.96), rgba(6,6,18,.9));
+  background: var(--bg) linear-gradient(180deg, rgba(8,8,24,.96), rgba(6,6,18,.9));
   border-bottom: 1px solid var(--border);
   box-shadow: 0 1px 0 rgba(0,240,255,.18);
   font: 12px/1.4 var(--mono); color: var(--text-mid);
@@ -256,11 +272,11 @@ nav.tabs a.on::after {
   flex: none; padding: 2px 8px; border-radius: var(--radius-sm);
   border: 1px solid rgba(0,240,255,.35); color: var(--cyan);
   letter-spacing: .1em; text-transform: uppercase; font-weight: 700; font-size: 10px;
-  background: rgba(0,240,255,.08);
+  background: #0a1d30;  /* 8% cyan over --panel */
 }
 .ingest-status.live .ingest-stage {
   border-color: rgba(255,182,39,.55); color: var(--amber);
-  background: rgba(255,182,39,.1);
+  background: #231c1f;  /* 10% amber over --panel */
   animation: pulse 1.1s ease-in-out infinite;
 }
 .ingest-detail { color: var(--text); min-width: 0; }
@@ -436,38 +452,40 @@ nav.tabs a.on::after {
 .badge {
   display: inline-block; padding: 2px 7px; border-radius: var(--radius-sm);
   font: 700 10px var(--mono); text-transform: uppercase; letter-spacing: .1em;
-  background: rgba(255,255,255,.03); color: var(--text-mid);
+  background: #121225; color: var(--text-mid);  /* 3% white over --panel */
   border: 1px solid var(--border);
 }
-.badge.c-model-release         { color:#00f0ff; border-color:rgba(0,240,255,.5);   background:rgba(0,240,255,.10);   box-shadow:0 0 10px rgba(0,240,255,.2); }
-.badge.c-research              { color:#b14aff; border-color:rgba(177,74,255,.5);  background:rgba(177,74,255,.10);  box-shadow:0 0 10px rgba(177,74,255,.2); }
-.badge.c-product-launch        { color:#39ff88; border-color:rgba(57,255,136,.45); background:rgba(57,255,136,.09);  box-shadow:0 0 10px rgba(57,255,136,.18); }
-.badge.c-tooling-oss           { color:#ffb627; border-color:rgba(255,182,39,.45); background:rgba(255,182,39,.09);  box-shadow:0 0 10px rgba(255,182,39,.18); }
-.badge.c-funding-acquisition   { color:#ff8a3d; border-color:rgba(255,138,61,.45); background:rgba(255,138,61,.09);  box-shadow:0 0 10px rgba(255,138,61,.18); }
-.badge.c-infrastructure-compute{ color:#3df0d0; border-color:rgba(61,240,208,.45); background:rgba(61,240,208,.09);  box-shadow:0 0 10px rgba(61,240,208,.18); }
-.badge.c-benchmark-eval        { color:#8fa6ff; border-color:rgba(143,166,255,.45);background:rgba(143,166,255,.09); box-shadow:0 0 10px rgba(143,166,255,.18); }
-.badge.c-policy-regulation     { color:#ff2e97; border-color:rgba(255,46,151,.5);  background:rgba(255,46,151,.10);  box-shadow:0 0 10px rgba(255,46,151,.2); }
-.badge.c-safety-incident       { color:#ff3b5c; border-color:rgba(255,59,92,.5);   background:rgba(255,59,92,.10);   box-shadow:0 0 10px rgba(255,59,92,.2); }
+/* Each ground is that category's wash over --panel. The tint percentages they
+   were are in the comment column, so the hue is still legible as a wash. */
+.badge.c-model-release         { color:#00f0ff; border-color:rgba(0,240,255,.5);   background:#0a2234;   box-shadow:0 0 10px rgba(0,240,255,.2); }    /* 10% cyan */
+.badge.c-research              { color:#b14aff; border-color:rgba(177,74,255,.5);  background:#1c1134;   box-shadow:0 0 10px rgba(177,74,255,.2); }   /* 10% violet */
+.badge.c-product-launch        { color:#39ff88; border-color:rgba(57,255,136,.45); background:#0f2128;   box-shadow:0 0 10px rgba(57,255,136,.18); }  /* 9% lime */
+.badge.c-tooling-oss           { color:#ffb627; border-color:rgba(255,182,39,.45); background:#211a1f;   box-shadow:0 0 10px rgba(255,182,39,.18); }  /* 9% amber */
+.badge.c-funding-acquisition   { color:#ff8a3d; border-color:rgba(255,138,61,.45); background:#211621;   box-shadow:0 0 10px rgba(255,138,61,.18); }  /* 9% orange */
+.badge.c-infrastructure-compute{ color:#3df0d0; border-color:rgba(61,240,208,.45); background:#10202e;   box-shadow:0 0 10px rgba(61,240,208,.18); }  /* 9% teal */
+.badge.c-benchmark-eval        { color:#8fa6ff; border-color:rgba(143,166,255,.45);background:#171932;   box-shadow:0 0 10px rgba(143,166,255,.18); } /* 9% periwinkle */
+.badge.c-policy-regulation     { color:#ff2e97; border-color:rgba(255,46,151,.5);  background:#230e2a;   box-shadow:0 0 10px rgba(255,46,151,.2); }   /* 10% magenta */
+.badge.c-safety-incident       { color:#ff3b5c; border-color:rgba(255,59,92,.5);   background:#231024;   box-shadow:0 0 10px rgba(255,59,92,.2); }    /* 10% red */
 /* the one badge with no neon of its own; it tracks the prose palette instead */
-.badge.c-opinion-analysis      { color:var(--text-mid); border-color:rgba(194,198,234,.35);background:rgba(194,198,234,.07); }
+.badge.c-opinion-analysis      { color:var(--text-mid); border-color:rgba(194,198,234,.35);background:#18182c; }                                       /* 7% --text-mid */
 
 .pill {
   display: inline-flex; align-items: center; gap: 4px;
-  padding: 1.5px 8px; border-radius: 10px; background: rgba(255,255,255,.03);
+  padding: 1.5px 8px; border-radius: 10px; background: #121225;  /* 3% white over --panel */
   border: 1px solid var(--border); font: 10.5px var(--mono); color: var(--text-mid);
 }
 .pill.corr {
   color: var(--amber); border-color: rgba(255,182,39,.45);
-  background: rgba(255,182,39,.08); box-shadow: 0 0 10px rgba(255,182,39,.16);
+  background: #1f191f; box-shadow: 0 0 10px rgba(255,182,39,.16);  /* 8% amber over --panel */
 }
 .pill.lab {
   color: var(--lime); border-color: rgba(57,255,136,.45);
-  background: rgba(57,255,136,.08); box-shadow: 0 0 10px rgba(57,255,136,.16);
+  background: #0f1f26; box-shadow: 0 0 10px rgba(57,255,136,.16);  /* 8% lime over --panel */
 }
 .pill.verdict { text-transform: uppercase; letter-spacing: .08em; font-weight: 700; }
-.pill.v-adopt { color: var(--lime); border-color: rgba(57,255,136,.55); background: rgba(57,255,136,.12); }
-.pill.v-research { color: var(--cyan); border-color: rgba(0,240,255,.5); background: rgba(0,240,255,.1); }
-.pill.v-watch { color: var(--amber); border-color: rgba(255,182,39,.45); background: rgba(255,182,39,.08); }
+.pill.v-adopt { color: var(--lime); border-color: rgba(57,255,136,.55); background: #11282b; }  /* 12% lime over --panel */
+.pill.v-research { color: var(--cyan); border-color: rgba(0,240,255,.5); background: #0a2234; } /* 10% cyan over --panel */
+.pill.v-watch { color: var(--amber); border-color: rgba(255,182,39,.45); background: #1f191f; } /* 8% amber over --panel */
 .pill.v-skip { color: var(--text-dim); }
 
 .meters {
@@ -477,7 +495,9 @@ nav.tabs a.on::after {
 .item .meters { margin-left: 0; }
 .meters .m {
   position: relative; width: 36px; height: 6px;
-  background: rgba(0,0,0,.55); border: 1px solid var(--border); border-radius: 2px;
+  /* 55% black over --panel: the well reads the same, and the stylesheet writes
+     rules for what sits inside it, so its ground counts as one under text. */
+  background: #05050e; border: 1px solid var(--border); border-radius: 2px;
 }
 .meters .m i {
   display: block; height: 100%;
@@ -496,7 +516,7 @@ nav.tabs a.on::after {
 .item .meters { margin-bottom: 10px; }
 a.pill:hover {
   color: var(--cyan); border-color: rgba(0,240,255,.45);
-  background: rgba(0,240,255,.09); text-shadow: none;
+  background: #0a2032; text-shadow: none;  /* 9% cyan over --panel */
 }
 .src { color: var(--text-dim); }
 .dotsep::before { content: "·"; margin: 0 3px; color: var(--border-hi); }
@@ -560,12 +580,12 @@ a.pill:hover {
 .term {
   display: inline-flex; align-items: baseline; gap: 5px;
   padding: 3px 9px; border-radius: 11px; font-size: 12px;
-  background: rgba(255,255,255,.03); border: 1px solid var(--border); color: var(--text-mid);
+  background: #121225; border: 1px solid var(--border); color: var(--text-mid);  /* 3% white over --panel */
   transition: all .13s;
 }
 .term:hover {
   border-color: var(--cyan); color: var(--cyan);
-  background: rgba(0,240,255,.09); box-shadow: 0 0 12px rgba(0,240,255,.25);
+  background: #0a2032; box-shadow: 0 0 12px rgba(0,240,255,.25);  /* 9% cyan over --panel */
   text-shadow: none;
 }
 .term .lift { font: 700 10.5px var(--mono); color: var(--lime); text-shadow: 0 0 8px rgba(57,255,136,.6); }
@@ -605,12 +625,12 @@ a.pill:hover {
 .chip {
   padding: 4px 12px; border-radius: 13px;
   font: 600 11.5px var(--mono); letter-spacing: .06em; text-transform: uppercase;
-  border: 1px solid var(--border); background: rgba(255,255,255,.03); color: var(--text-mid);
+  border: 1px solid var(--border); background: #121225; color: var(--text-mid);  /* 3% white over --panel */
   transition: all .13s;
 }
 .chip:hover {
   border-color: var(--cyan); color: var(--cyan);
-  background: rgba(0,240,255,.09); text-shadow: none;
+  background: #0a2032; text-shadow: none;  /* 9% cyan over --panel */
 }
 .chip.on {
   background: var(--cyan); border-color: var(--cyan); color: #001b20;
