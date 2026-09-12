@@ -968,14 +968,31 @@ def test_the_ground_model_composites_a_sealed_wash(tokens):
     assert round(skipped, 2) == 4.93, f"the first-opaque read scores the same stack 4.93, got {skipped:.2f}"
     assert composited < skipped, "compositing the wash must cost contrast, never add it"
 
+    # A darkening wash is read the same way. The check below once required each
+    # sealed stack to read *lighter* than its seal, which is true of the five washes
+    # this stylesheet happens to write and not of the model: this stack reads darker
+    # and is read correctly, and that spelling failed it saying the wash was dropped.
+    darker = _grounds("#0b0b1e linear-gradient(rgba(0,0,0,.20), rgba(0,0,0,.20))", tokens)
+    assert darker is not None and len(darker) == 1
+    assert [round(c) for c in darker[0][1]] == [9, 9, 24], (
+        f"a darkening wash above the seal is composited too: {[round(c) for c in darker[0][1]]}"
+    )
+
 
 def test_sealed_wash_reading_is_load_bearing_in_this_stylesheet(rules, tokens):
     """The stylesheet really does seal washes, so the model is not theory.
 
     Without this the check above could pass against a stylesheet that never
     stacks anything, and the first-opaque shortcut would cost nothing to
-    restore. Each sealed stack is also required to read lighter than its seal:
-    a wash that composites to exactly its own base is a wash the reader lost.
+    restore. Each sealed stack is also required to read as something other than
+    its seal: a wash that composites to exactly its own base is a wash the
+    reader lost.
+
+    Other than, not lighter than. `lightest > base` was the same claim plus an
+    assumption about sign, and the assumption is this stylesheet's five washes
+    rather than the model's: a darkening wash stacked over an opaque seal is an
+    ordinary thing to write, reads correctly here, and failed that spelling with
+    a message saying the wash had been dropped.
     """
     sealed = []
     for condition, sel, decls in rules:
@@ -989,9 +1006,9 @@ def test_sealed_wash_reading_is_load_bearing_in_this_stylesheet(rules, tokens):
                 continue  # nothing is stacked above the seal
             grounds = _grounds(value, tokens)
             assert grounds, f"{sel} seals its stack but reads no ground"
-            base = max(_luminance(rgb) for _l, rgb, _a in layers[seal])
-            lightest = max(_luminance(rgb) for _l, rgb in grounds)
-            assert lightest > base, (
+            seal_colours = {tuple(round(c, 3) for c in rgb) for _l, rgb, _a in layers[seal]}
+            read = {tuple(round(c, 3) for c in rgb) for _l, rgb in grounds}
+            assert read - seal_colours, (
                 f"{_where(condition)} {sel} stacks {seal} layer(s) over its seal and still "
                 f"reads as the seal alone: the wash was dropped"
             )
@@ -1171,11 +1188,31 @@ def _declares_background(decls: dict[str, str]) -> bool:
 
 
 def _background_value(decls: dict[str, str]) -> str:
-    """The one value that decides the stack, longhands folded in below it."""
+    """The one value that decides the stack, longhands folded in below it.
+
+    Declaration order decides, because within one rule the `background` shorthand
+    resets `background-color` and a `background-color` written after it sets the
+    colour back. Reading the shorthand whenever it is present -- which is what
+    this did -- let a rule seal on paper and composite in the browser: an opaque
+    `background` followed by a translucent `background-color` was read as the
+    opaque one, so the stack looked sealed and the page painted a wash with
+    nothing behind it but the backdrop.
+    """
     value = decls.get("background") or decls.get("background-color") or ""
     image = decls.get("background-image")
     if image and not decls.get("background"):
         value = f"{image} {value}".strip() if value else image
+    colour = decls.get("background-color")
+    if decls.get("background") and colour:
+        order = list(decls)
+        if order.index("background-color") > order.index("background"):
+            # The shorthand keeps only its image layers; the longhand is the
+            # bottom colour. A colour can only legally sit in the last layer, so
+            # that is the only one whose colour terms are replaced.
+            parts = _split_top(value)
+            images = [t for t in _top_level_terms(parts[-1]) if _IMAGE_FN.search(t)]
+            parts[-1] = " ".join(images + [colour]) if images else colour
+            value = ", ".join(parts)
     return value
 
 
@@ -1192,11 +1229,17 @@ def _holds_text(subject: str, decls: dict[str, str], all_rules) -> bool:
     track, the gradient fill inside it, a scrollbar thumb. None of them is
     named: each is excluded because no rule in app.css colours text in it,
     typesets it, pads it or puts anything inside it.
+
+    `content: ""` excludes an empty decorative pseudo-element, and it is tested
+    *after* the rule's own colour rather than before it: a rule that colours text
+    holds text whatever its content string says. Ordered the other way round,
+    adding `content: ""` to any rule took it and its ground out of this gate
+    entirely -- an unsealed wash under a reading token passed every criterion.
     """
-    if decls.get("content", "").strip() in ('""', "''"):
-        return False
     if decls.get("color"):
         return True
+    if decls.get("content", "").strip() in ('""', "''"):
+        return False
     key = _key(subject)
     if any(simple in TEXT_PSEUDO_ELEMENTS for simple in key):
         return True
@@ -1258,13 +1301,107 @@ def _paints_a_ground(value: str, tokens: dict[str, str]) -> bool:
     return any(alpha > 0 for layer in layers for _label, _rgb, alpha in layer)
 
 
+# Everything a background value may say that is not a colour: positions, sizes,
+# repeat, attachment and box keywords, the gradient geometry and interpolation
+# words, and any length, percentage, angle or bare number. Closed vocabularies
+# both, so a term that is in neither this set nor `_paints` is a term the reader
+# does not understand -- and the unknown direction fails loudly rather than
+# quietly, which is the whole point of separating the two.
+_BACKGROUND_KEYWORD = frozenset(
+    """
+    / auto cover contain none
+    top right bottom left center
+    repeat repeat-x repeat-y no-repeat space round
+    scroll fixed local border-box padding-box content-box
+    at to in from circle ellipse
+    closest-side closest-corner farthest-side farthest-corner
+    srgb srgb-linear display-p3 a98-rgb prophoto-rgb rec2020 xyz xyz-d50 xyz-d65
+    lab oklab lch oklch hsl hwb shorter longer increasing decreasing hue
+    """.split()
+)
+_NUMERIC_TERM = re.compile(
+    r"[+-]?(?:\d+\.?\d*|\.\d+)(?:px|pt|pc|in|cm|mm|q|em|rem|ex|ch|vw|vh|vmin|vmax|%|deg|grad|rad|turn)?\Z",
+    re.I,
+)
+
+
+def _unreadable_terms(value: str, tokens: dict[str, str]) -> list[str]:
+    """Terms in a background value this reader cannot account for.
+
+    `_paints` returns nothing both for a term that paints no colour and for a
+    colour syntax it does not implement -- a named colour, `hsl()`, `color-mix()`,
+    `oklch()`, an eight-digit hex. Read as "paints nothing", the second case took
+    the ground out of every check below without failing anything: a chrome surface
+    at `background: white` or `background: hsl(0 0% 97% / 30%)` was gated by
+    nothing, which is `f5-unread-ground` rebuilt one syntax at a time. On an
+    anchored surface `GROUND_ANCHORS` caught it, which means the protection was a
+    list of thirteen names -- the thing this ticket is meant to stop maintaining.
+
+    A term reported here is not necessarily a defect in the stylesheet: it may be
+    a colour `_paints` should learn, or a background keyword this set should. What
+    it may not be is invisible.
+    """
+    out: list[str] = []
+    for part in _split_top(value):
+        for term in _top_level_terms(part):
+            if _IMAGE_FN.search(term) and "(" in term:
+                out.extend(_unreadable_terms(term[term.index("(") + 1 : term.rindex(")")], tokens))
+                continue
+            if _paints(term, tokens):
+                continue
+            if term.lower() in _BACKGROUND_KEYWORD or _NUMERIC_TERM.fullmatch(term):
+                continue
+            out.append(term)
+    return out
+
+
+def _fractional_opacities(rules) -> dict[str, float]:
+    """Selectors painted at a group opacity strictly between 0 and 1.
+
+    `opacity` is the stylesheet's second compositing mechanism and the one the
+    background model above cannot see. It composites the element's whole subtree
+    -- the ink and the ground it sits on, together -- against whatever is behind
+    the element, so a sealed stack stops deciding what the glyph lands on and the
+    ratio measured from the declarations is a number no browser produces. It is
+    the same defect `f4-sealed-wash` named, through the other mechanism.
+
+    Zero is not here. At `opacity: 0` nothing is painted at all, so there is no
+    ground and no text to put a number on -- that is how the toast stays hidden
+    until `.toast.show` brings it back to 1, and flagging it would be a false
+    failure. Between the two the ground is real and indeterminate.
+
+    app.css already knows this: `.story.stale` dropped `opacity: .78` for an
+    opaque colour demotion because "an overlay extension multiplied it a second
+    time", and the accessibility block sets `opacity: 1` on the decorations it
+    keeps. What neither reached was `.btn:disabled`, whose ground is one this
+    check measures.
+    """
+    found: dict[str, float] = {}
+    for _index, _condition, subject, decls in _selector_rules(rules):
+        raw = decls.get("opacity")
+        if raw is None:
+            continue
+        try:
+            alpha = float(raw.strip().rstrip("%")) / (100 if "%" in raw else 1)
+        except ValueError:
+            continue
+        if 0 < alpha < 1:
+            found[subject] = min(alpha, found.get(subject, 1.0))
+    return found
+
+
 def _text_grounds(rules, tokens):
     """Every (rule, ground, ink) the page paints text on. The whole derivation."""
     all_rules = _selector_rules(rules)
     for index, condition, subject, decls in all_rules:
         if not _declares_background(decls):
             continue
-        if not _paints_a_ground(_background_value(decls), tokens):
+        value = _background_value(decls)
+        # Paints nothing *and* was fully understood: a cleared UA background, and
+        # the only reason to drop a rule here. A value carrying a term the reader
+        # cannot account for is yielded instead, so the check reports it rather
+        # than mistaking "I cannot read this" for "this paints nothing".
+        if not _paints_a_ground(value, tokens) and not _unreadable_terms(value, tokens):
             continue
         if not _holds_text(subject, decls, all_rules):
             continue
@@ -1273,14 +1410,43 @@ def _text_grounds(rules, tokens):
 
 def test_all_text_grounds_clear_aa_under_the_extension_overlay(rules, tokens):
     """Every ground under text is determinate, and clears AA for the reading palette."""
+    # Three relations this derivation rests on, pinned before it runs, because each
+    # of them decides what the gate does *not* look at -- and a gate that looks at
+    # nothing passes. What `_holds_text` excludes, what `_background_value` reads as
+    # the stack, and which terms of it `_unreadable_terms` cannot account for.
+    assert _holds_text(".x::before", {"content": '""', "color": "var(--text)"}, []), (
+        "a rule that colours text holds text whatever its content string says; ordered "
+        "the other way round, `content: \"\"` took any rule out of this gate entirely"
+    )
+    assert not _holds_text(".x::before", {"content": '""'}, []), (
+        "an empty decorative pseudo-element that colours nothing still holds no text"
+    )
+    assert _background_value({"background": "#000", "background-color": "rgba(255,255,255,.4)"}) == (
+        "rgba(255,255,255,.4)"
+    ), "a `background-color` written after the shorthand takes the colour, so it decides the seal"
+    assert _background_value({"background-color": "rgba(255,255,255,.4)", "background": "#000"}) == "#000", (
+        "written before it, the shorthand resets it and wins outright"
+    )
+    assert _unreadable_terms("#0b0b1e linear-gradient(180deg, rgba(0,0,0,.2), transparent 62%)", tokens) == []
+    assert _unreadable_terms("white", tokens) == ["white"]
+    assert _unreadable_terms("hsl(0 0% 97% / 30%)", tokens) == ["hsl(0 0% 97% / 30%)"]
+    assert _unreadable_terms("color-mix(in srgb, #fff 3%, #0b0b1e)", tokens) == [
+        "color-mix(in srgb, #fff 3%, #0b0b1e)"
+    ], "an unreadable colour must be reported, never read as painting nothing"
+
     measured: dict[str, list[str]] = {}
     reached: set[str] = set()
-    unsealed, failures, exempted = [], [], []
+    unsealed, failures, exempted, unreadable = [], [], [], []
+    faded = _fractional_opacities(rules)
 
     for _index, condition, subject, decls, ink in _text_grounds(rules, tokens):
         reached.add(subject)
         where = f"{_where(condition)} " if condition else ""
         value = _background_value(decls)
+        strange = _unreadable_terms(value, tokens)
+        if strange:
+            unreadable.append(f"{where}{subject} -> {value}  (cannot read: {strange})")
+            continue
         grounds = _grounds(value, tokens)
         if grounds is None:
             unsealed.append(f"{where}{subject} -> {value}")
@@ -1306,7 +1472,20 @@ def test_all_text_grounds_clear_aa_under_the_extension_overlay(rules, tokens):
                         f"{where}{subject} ({label}): {ink_label} on "
                         f"rgb({', '.join(f'{c:.0f}' for c in ground)}) is {ratio:.2f}, needs 4.5"
                     )
+                for fade_sel, alpha in faded.items():
+                    if _covers(subject, fade_sel) or _descends_from(fade_sel, subject):
+                        failures.append(
+                            f"{where}{subject} ({label}): {fade_sel} paints it at opacity "
+                            f"{alpha}, so the {ratio:.2f} measured for {ink_label} here is not "
+                            f"what the browser paints -- group opacity composites ink and "
+                            f"ground together against a backdrop this page cannot name"
+                        )
 
+    assert not unreadable, (
+        "a ground under text is written in a syntax this reader does not understand, so "
+        "nothing below measured it. Teach `_paints` the colour, or `_BACKGROUND_KEYWORD` "
+        "the keyword -- do not leave it unread:\n" + "\n".join(sorted(unreadable))
+    )
     assert not unsealed, (
         "a ground under text takes its colour from whatever is behind it, which under an "
         "overlay extension is not this page:\n" + "\n".join(sorted(unsealed))
@@ -1556,9 +1735,42 @@ def test_a11y_specificity_every_flattening_rule_wins_the_cascade(rules, tokens):
         "importance outranks specificity"
     )
 
+    # The two inputs `_wins` reads that the cases above hand it ready-made. They
+    # were the rest of the same hole: the pins construct their own tuples and pass
+    # `"background"` as a literal, so neither the property the comparison is run on
+    # nor the base set it is run against was pinned by them, and gutting either
+    # left this criterion green.
+    assert _background_property({"background": "red"}) == "background"
+    assert _background_property({"background-color": "red"}) == "background-color"
+    assert _background_property({"background-image": "url(x)"}) == "background-image"
+    assert _background_property({"color": "red"}) == "", "a rule with no background names no property"
+    longhand_bang = (1, "", ".badge", {"background-color": "red !important"})
+    longhand_plain = (9, "", ".badge.c-x", {"background-color": "blue"})
+    assert _wins(longhand_bang, longhand_plain, _background_property(longhand_bang[3])), (
+        "importance on a longhand outranks specificity too -- which it cannot do if "
+        "`_background_property` reports a property the rules do not declare"
+    )
+
     block = [r for r in _a11y_rules(rules) if _declares_background(r[3])]
     base = [r for r in _base_rules(rules) if _declares_background(r[3])]
     assert block, "the accessibility block flattens no ground at all"
+
+    # The base cascade the comparison runs against, anchored the way
+    # `GROUND_ANCHORS` anchors the derivation. `block` and `composites` each carry
+    # an anti-vacuity guard and this set carried none, so a `_base_rules` narrowed
+    # to type selectors -- dropping every class rule, which is every rule the 22
+    # defeats lived on -- emptied the `defeated` half below in silence. These three
+    # are the defeat shapes the criterion was written for.
+    base_seen = {sel for _i, _c, sel, _d in base}
+    missing_base = [
+        sel
+        for sel in (".badge.c-research", "a.pill:hover", ".ingest-status.live .ingest-stage")
+        if sel not in base_seen
+    ]
+    assert not missing_base, (
+        f"the base cascade this comparison runs against no longer contains the rules the "
+        f"defeats lived on, so it is comparing the block against almost nothing: {missing_base}"
+    )
 
     # Which surfaces still need flattening: a ground that carries text and is not
     # already one opaque colour. Derived from the same ground model as the

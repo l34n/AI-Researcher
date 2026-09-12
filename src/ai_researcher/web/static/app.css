@@ -211,7 +211,16 @@ nav.tabs a.on::after {
   border-color: var(--cyan); color: var(--cyan);
   background: #0a2639; box-shadow: 0 0 14px rgba(0,240,255,.3);  /* 12% cyan over --panel */
 }
-.btn:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
+/* Demoted with colour, not with opacity — the same trade `.story.stale` makes
+   below and for the same reason. `opacity: .4` composited the button's ground and
+   its label together against whatever was behind it, so the topbar Refresh button
+   read 3.25 bare and 2.26 under an overlay extension while every check here
+   measured .btn's own 8.81. One prose step down on an opaque ground is 6.36, and
+   the quiet border plus the dropped glow carry the rest of the affordance. */
+.btn:disabled {
+  color: var(--text-mid); border-color: var(--border);
+  cursor: not-allowed; box-shadow: none;
+}
 .btn.primary {
   background: var(--magenta); border-color: var(--magenta); color: #12001a;
   box-shadow: var(--glow-magenta);
@@ -636,7 +645,13 @@ a.pill:hover {
   background: var(--cyan); border-color: var(--cyan); color: #001b20;
   box-shadow: var(--glow-cyan); text-shadow: none;
 }
-.chip .n { opacity: .65; font-size: 10.5px; margin-left: 4px; }
+/* The count is demoted by size alone. `opacity: .65` composited it against the
+   chip's ground, so the count read 3.38 under an overlay extension where the
+   chip's own 6.49 was what got measured — and it could not be demoted by colour
+   instead, because .chip.on flips the ink to #001b20 and a fixed dim step would
+   strand the count on cyan. At full strength it inherits whichever ink the chip
+   is already carrying, so it is covered by the figure the chip is covered by. */
+.chip .n { font-size: 10.5px; margin-left: 4px; }
 
 .filters { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; margin-bottom: 14px; }
 select, input[type=search], input[type=text] {
@@ -769,6 +784,9 @@ button.fb:hover { color: var(--cyan); border-color: var(--cyan); }
   .panel, .story { background: var(--panel); }
   .panel > h3 { background: var(--panel-hi); }
 
-  /* Opacity composites, so it goes even where colour stays. */
-  .brief hr, .brief h2::before, .brand::after, .chip .n { opacity: 1; }
+  /* Opacity composites, so it goes even where colour stays. `.chip .n` is no
+     longer here: it used to be demoted with opacity and is demoted by size now,
+     so there is nothing left for this to flatten. What is left is decoration
+     carrying chroma, which no ground brings to AA under this overlay anyway. */
+  .brief hr, .brief h2::before, .brand::after { opacity: 1; }
 }
