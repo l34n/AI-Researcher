@@ -35,6 +35,18 @@ PROSE_TOKENS = ("--text", "--text-mid", "--text-dim")
 # The page's own two full-viewport decoration layers.
 PAGE_OVERLAY_LAYERS = ("body::before", "body::after")
 
+# The chrome bars: sticky strips that paint a ground of their own and carry
+# their own text, outside the reading column.
+CHROME_BARS = (".topbar", ".ingest-status")
+
+# Text each bar carries at a prose token. Which bare class sits inside which bar
+# is the template's fact, not the stylesheet's, so these are named and asserted
+# present; every other prose-coloured rule on a bar is derived from its selector.
+CHROME_TEXT_ANCHORS = {
+    ".topbar": (".topstats",),
+    ".ingest-status": (".ingest-current",),
+}
+
 # Where prose is painted: the reading column. Everything inside it is a
 # reading surface; everything outside it is chrome.
 READING_COLUMN = ".wrap"
@@ -218,6 +230,22 @@ def _translucent_alphas(text: str) -> list[float]:
             if alpha < 1:
                 found.append(alpha)
     return found
+
+
+def _rgba_terms(value: str) -> list[tuple[tuple[float, float, float], float]]:
+    """Every `rgb()`/`rgba()` colour in a value, as (rgb, alpha)."""
+    out: list[tuple[tuple[float, float, float], float]] = []
+    for match in _RGBA.finditer(value):
+        parts = [p for p in re.split(r"[,\s]+", match.group(1).replace("/", ",")) if p]
+        if len(parts) < 3:
+            continue
+        try:
+            rgb = tuple(float(p.rstrip("%")) for p in parts[:3])
+            alpha = float(parts[3].rstrip("%")) / (100 if "%" in parts[3] else 1) if len(parts) == 4 else 1.0
+        except ValueError:
+            continue
+        out.append((rgb, alpha))  # type: ignore[arg-type]
+    return out
 
 
 def _is_flat_colour(layer: str, tokens: dict[str, str]) -> bool:
@@ -413,7 +441,115 @@ def test_prose_pairs_hold_contrast_under_page_and_extension_overlay(
     assert not failures, "\n".join(failures)
 
 
-# ── 2. the accessibility signals an overlay user already carries ─────────
+# ── 2. the text the chrome paints on its own ground ─────────────────────
+
+
+def _backdrop(rules, tokens) -> tuple[float, float, float]:
+    """What a translucent chrome ground is painted over: the body's final layer."""
+    layers = _split_top(_rule_for(rules, "body").get("background", ""))
+    assert layers and _is_flat_colour(layers[-1], tokens), (
+        f"the body background no longer ends in a flat colour: {layers[-1:]}"
+    )
+    return _hex_rgb(_resolve(layers[-1], tokens))
+
+
+def _resolve(layer: str, tokens: dict[str, str]) -> str:
+    var_match = re.fullmatch(r"var\((--[\w-]+)\)", layer.strip())
+    return tokens[var_match.group(1)].strip() if var_match else layer.strip()
+
+
+def _bar_grounds(rules, bar: str, tokens, backdrop) -> list[tuple[str, tuple]]:
+    """Every colour a bar's own background can put under its text.
+
+    A gradient is read by every stop it names; a translucent stop is composited
+    over the page's backdrop, because that is what is actually behind the bar.
+    """
+    value = _rule_for(rules, bar).get("background", "") or _rule_for(rules, bar).get("background-color", "")
+    grounds = [(literal, _hex_rgb(literal)) for _name, literal in _opaque_stops(value, tokens)]
+    for rgb, alpha in _rgba_terms(value):
+        composited = tuple(rgb[i] * alpha + backdrop[i] * (1 - alpha) for i in range(3))
+        grounds.append((f"rgba({rgb[0]:.0f},{rgb[1]:.0f},{rgb[2]:.0f},{alpha}) over backdrop", composited))
+    return grounds
+
+
+def _bar_overlay_factor(rules, bar: str) -> float:
+    """How much the page's own layers darken this bar before anything else does.
+
+    Two sources, both read off the stylesheet: a pseudo-element the bar paints
+    across itself, and any full-viewport layer that stacks at or above the bar.
+    """
+    factor = 1.0
+    bar_z = float(_rule_for(rules, bar).get("z-index", 0))
+    for media, sel, decls in rules:
+        if media or decls.get("inset") != "0":
+            continue
+        if not any(part.startswith(f"{bar}::") for part in _selector_parts(sel)):
+            continue
+        alphas = _translucent_alphas(decls.get("background", ""))
+        factor *= 1.0 - (max(alphas) if alphas else 0.0)
+    for sel in _full_viewport_layers(rules):
+        decls = _rule_for(rules, sel)
+        if float(decls.get("z-index", 0)) >= bar_z:
+            alphas = _translucent_alphas(decls.get("background", ""))
+            factor *= 1.0 - (max(alphas) if alphas else 0.0)
+    return factor
+
+
+def _bar_text(rules, bar: str) -> dict[str, str]:
+    """Prose-coloured text a bar carries, as selector -> token."""
+    found: dict[str, str] = {}
+    for media, sel, decls in rules:
+        if media:
+            continue
+        colour = decls.get("color", "").replace(" ", "")
+        token = next((t for t in PROSE_TOKENS if f"var({t})" == colour), None)
+        if token is None:
+            continue
+        for part in _selector_parts(sel):
+            if part == bar or part.startswith((f"{bar} ", f"{bar}.")):
+                found[part] = token
+    for anchor in CHROME_TEXT_ANCHORS[bar]:
+        colour = _rule_for(rules, anchor).get("color", "").replace(" ", "")
+        token = next((t for t in PROSE_TOKENS if f"var({t})" == colour), None)
+        assert token, f"{anchor} no longer carries a prose token colour: {colour!r}"
+        found[anchor] = token
+    return found
+
+
+@pytest.mark.parametrize("bar", CHROME_BARS)
+def test_chrome_text_survives_the_extension_overlay(bar, rules, tokens):
+    """The bars' own text clears AA under the extension, with nothing of ours on top.
+
+    The reading column is not the only place the page paints words. Each bar
+    carries its own scale text, and anything this page composites over that text
+    is spent out of the same budget the extension is about to claim.
+    """
+    backdrop = _backdrop(rules, tokens)
+    grounds = _bar_grounds(rules, bar, tokens, backdrop)
+    assert grounds, f"{bar} paints no ground this model can read"
+    factor = _bar_overlay_factor(rules, bar)
+
+    failures = []
+    for sel, token in _bar_text(rules, bar).items():
+        fg = _hex_rgb(tokens[token])
+        for label, bg in grounds:
+            page_fg = _over_black(fg, 1 - factor)
+            page_bg = _over_black(bg, 1 - factor)
+            ratio = _contrast(
+                _over_black(page_fg, EXTENSION_BLACK_ALPHA),
+                _over_black(page_bg, EXTENSION_BLACK_ALPHA),
+            )
+            if ratio < 4.5:
+                failures.append(
+                    f"{sel} ({token}) on {bar} {label}: "
+                    f"{_contrast(fg, bg):.2f} bare, "
+                    f"{_contrast(page_fg, page_bg):.2f} under the page's own layers, "
+                    f"{ratio:.2f} under page+extension (needs 4.5)"
+                )
+    assert not failures, "\n".join(failures)
+
+
+# ── 3. the accessibility signals an overlay user already carries ─────────
 
 
 @pytest.mark.parametrize("condition", A11Y_CONDITIONS)
@@ -470,7 +606,7 @@ def test_media_queries_neutralize_the_pages_own_overlay(condition, css, tokens):
         )
 
 
-# ── 3. prose contrast comes from opaque colour, never from compositing ──
+# ── 4. prose contrast comes from opaque colour, never from compositing ──
 
 
 def _prose_rules(rules):

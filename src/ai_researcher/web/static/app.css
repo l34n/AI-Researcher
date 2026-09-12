@@ -103,10 +103,10 @@ body {
    cannot out-stack or remove, a CRT/night-shift/inverter extension painting
    the whole viewport at 2147483647. Darkening is multiplicative and contrast
    is not, so two of our own layers plus theirs put body copy under AA no
-   matter how bright the ink. Spend the budget on the chrome instead: .topbar
-   and .ingest-status ride above these and carry their own scanlines, so the
-   CRT still reads where the look lives. Below, the gutters and the gaps
-   between panels are transparent, so both layers still show through .wrap. */
+   matter how bright the ink. The bars carry no scanlines of their own either:
+   at 16% over --text-dim their own scale text read 3.77:1 under the same
+   extension. Below, the gutters and the gaps between panels are transparent,
+   so both layers still show through .wrap. */
 body::before {
   content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
   background: repeating-linear-gradient(
@@ -120,15 +120,6 @@ body::after {
      enough to dim the right-hand sidebar, and that column holds real content. */
   background: radial-gradient(140% 110% at 50% 50%, transparent 72%, rgba(0,0,0,.30));
 }
-/* The chrome's own scanlines, since the bars now paint above the body layers. */
-.topbar::after, .ingest-status::after {
-  content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none;
-  background: repeating-linear-gradient(
-    180deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px
-  );
-  mix-blend-mode: multiply;
-}
-
 a { color: var(--accent); text-decoration: none; transition: color .12s, text-shadow .12s; }
 a:hover { text-decoration: none; color: #6ff8ff; text-shadow: var(--glow-soft); }
 h1,h2,h3,h4 { margin: 0; font-weight: 700; line-height: 1.3; }
@@ -737,8 +728,8 @@ button.fb:hover { color: var(--cyan); border-color: var(--cyan); }
    Someone running a CRT filter, a night-shift tint or a dark-mode inverter has
    usually set one of these three as well, and all three say the same thing: no
    more composited layers. So the page stops adding its own — both CRT layers
-   go, on the body and on the chrome — and every ground that carries text
-   flattens to the colour it was approximating. The neon is untouched: it lives
+   go — and every ground that carries text flattens to the colour it was
+   approximating. The neon is untouched: it lives
    in the hues and the glows, not in the blending. What goes is only the
    compositing, the part that stacks with a layer this page never gets to see.
 
@@ -749,7 +740,6 @@ button.fb:hover { color: var(--cyan); border-color: var(--cyan); }
        (prefers-reduced-transparency: reduce),
        (forced-colors: active) {
   body::before, body::after { display: none; }
-  .topbar::after, .ingest-status::after { display: none; }
 
   body { background: var(--bg); }
   .topbar { background: var(--bg-raise); backdrop-filter: none; }
