@@ -1275,7 +1275,7 @@ def test_all_text_grounds_clear_aa_under_the_extension_overlay(rules, tokens):
     """Every ground under text is determinate, and clears AA for the reading palette."""
     measured: dict[str, list[str]] = {}
     reached: set[str] = set()
-    unsealed, failures = [], []
+    unsealed, failures, exempted = [], [], []
 
     for _index, condition, subject, decls, ink in _text_grounds(rules, tokens):
         reached.add(subject)
@@ -1285,6 +1285,7 @@ def test_all_text_grounds_clear_aa_under_the_extension_overlay(rules, tokens):
         if grounds is None:
             unsealed.append(f"{where}{subject} -> {value}")
             continue
+        palette = {tokens[token].strip(): token for token in PROSE_TOKENS}
         for label, ground in grounds:
             for ink_label, literal in ink.items():
                 fg = _hex_rgb(literal)
@@ -1292,9 +1293,14 @@ def test_all_text_grounds_clear_aa_under_the_extension_overlay(rules, tokens):
                     _over_black(fg, EXTENSION_BLACK_ALPHA),
                     _over_black(ground, EXTENSION_BLACK_ALPHA),
                 )
-                if literal not in {tokens[t].strip() for t in PROSE_TOKENS}:
-                    continue  # chrome chroma: measured for the record, not gated
-                measured.setdefault(subject, []).append(f"{ink_label} {ratio:.2f}")
+                if literal not in palette:
+                    # Chrome chroma. Not gated here -- see the section header for
+                    # the ceiling that makes gating it unsatisfiable -- but kept
+                    # rather than dropped, so the exemption is a set this check
+                    # can state and guard instead of a silent `continue`.
+                    exempted.append((ratio, f"{where}{subject}", ink_label, literal))
+                    continue
+                measured.setdefault(subject, []).append(f"{palette[literal]} {ratio:.2f}")
                 if ratio < 4.5:
                     failures.append(
                         f"{where}{subject} ({label}): {ink_label} on "
@@ -1314,6 +1320,24 @@ def test_all_text_grounds_clear_aa_under_the_extension_overlay(rules, tokens):
     assert not unweighed, (
         f"these grounds are reached but no reading step is weighed against them any "
         f"more, so the 4.5 floor no longer applies to them: {unweighed}"
+    )
+
+    # The exemption is a partition, and this is the edge it can rot along. Reading
+    # ink reaches the gate by resolving to one of the three palette literals; if a
+    # token stopped resolving -- renamed, moved out of `:root`, misspelled in
+    # PROSE_TOKENS -- its rules would keep their `var(--text-dim)` labels and fall
+    # out of the gate into this set, and every assertion above would still pass
+    # with the floor quietly applying to less of the page.
+    assert exempted, "no chroma ink was found at all, so this partition is vacuous"
+    leaked = sorted({
+        f"{subject} <- {ink_label}"
+        for _ratio, subject, ink_label, _literal in exempted
+        if any(token in ink_label for token in PROSE_TOKENS)
+    })
+    assert not leaked, (
+        "reading ink fell out of the gate into the chroma exemption, so the 4.5 floor "
+        "stopped applying to it -- a prose token is no longer resolving to its "
+        f"literal:\n" + "\n".join(leaked)
     )
 
 
