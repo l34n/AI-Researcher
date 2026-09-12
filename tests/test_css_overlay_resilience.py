@@ -66,13 +66,19 @@ A11Y_CONDITIONS = (
     pytest.param("prefers-reduced-transparency: reduce", id="reduced-transparency"),
     pytest.param("forced-colors: active", id="forced-colors"),
 )
-A11Y_OPAQUE_SURFACES = (
+
+# Rules the prose classifier must keep calling prose. Not a frozen count: a
+# count is a reading of the stylesheet at one moment, and a classifier quietly
+# narrowed until it passes is exactly what this has to catch. These are the
+# containers that carry the page's body copy.
+PROSE_ANCHORS = (
     ".panel",
     ".story",
     ".item:hover",
     "tr:hover td",
     "th",
-    "input[type=search]",
+    ".brief li",
+    ".story .sum",
 )
 
 
@@ -136,8 +142,22 @@ def _decls(block: str) -> dict[str, str]:
     return decls
 
 
+def _selector_parts(selector: str) -> set[str]:
+    """A rule's comma-separated selectors, whitespace-normalised."""
+    return {" ".join(part.split()) for part in _split_top(selector) if part.strip()}
+
+
 def _selector_matches(selector: str, wanted: str) -> bool:
-    return any(part.strip() == wanted for part in _split_top(selector))
+    return " ".join(wanted.split()) in _selector_parts(selector)
+
+
+def _overrides(block_selector: str, base_selector: str) -> bool:
+    """Whether a rule in a media block restyles a rule in the base cascade.
+
+    Compared part by part: `.panel, .story` inside the block overrides the base
+    `.panel`, and a rule written as one list overrides each rule in it.
+    """
+    return bool(_selector_parts(block_selector) & _selector_parts(base_selector))
 
 
 def _rule_for(rules, selector: str, media: str = "") -> dict[str, str]:
@@ -187,8 +207,9 @@ _HSLA = re.compile(r"\bhsla?\(([^)]*)\)", re.I)
 def _translucent_alphas(text: str) -> list[float]:
     found = []
     for match in list(_RGBA.finditer(text)) + list(_HSLA.finditer(text)):
-        parts = [p.strip() for p in match.group(1).replace("/", ",").split(",")]
-        parts = [p for p in parts if p]
+        # `rgb(0 0 0 / 30%)` and `rgba(0,0,0,.3)` are the same colour: split on
+        # both separators so the modern form is not silently read as opaque.
+        parts = [p for p in re.split(r"[,\s]+", match.group(1).replace("/", ",")) if p]
         if len(parts) == 4:
             try:
                 alpha = float(parts[3].rstrip("%")) / (100 if "%" in parts[3] else 1)
@@ -206,8 +227,10 @@ def _is_flat_colour(layer: str, tokens: dict[str, str]) -> bool:
         return _is_flat_colour(tokens.get(var_match.group(1), ""), tokens)
     if re.fullmatch(r"#[0-9a-fA-F]{3}|#[0-9a-fA-F]{6}", layer):
         return True
-    if re.fullmatch(r"rgb\([^)]*\)|hsl\([^)]*\)", layer, re.I):
-        return True
+    if re.fullmatch(r"(rgba?|hsla?)\([^)]*\)", layer, re.I):
+        # Opaque only if it carries no alpha below 1 — in either syntax. Reading
+        # `rgb(0 0 0 / 30%)` as flat would let it seal a stack it cannot back.
+        return not _translucent_alphas(layer)
     if "(" in layer:
         return False  # a gradient or url() backs nothing; it is not a flat colour
     return bool(layer) and layer not in (
@@ -253,21 +276,41 @@ def tokens(rules) -> dict[str, str]:
     return {k: v for k, v in _rule_for(rules, ":root").items() if k.startswith("--")}
 
 
+def _full_viewport_layers(rules) -> set[str]:
+    """Selectors that paint a fixed layer across the whole viewport."""
+    return {
+        sel
+        for media, sel, decls in rules
+        if not media
+        and decls.get("position") == "fixed"
+        and decls.get("inset") == "0"
+        and any(decls.get(p) for p in ("background", "background-color", "background-image"))
+    }
+
+
 @pytest.fixture(scope="module")
 def page_overlay_factor(rules) -> float:
     """How much of its own darkening the page still lands on prose.
 
     Each full-viewport CRT layer only reaches a reading surface if the reading
     column does not paint above it, so the factor is read off the stylesheet's
-    own stacking order rather than assumed.
+    own stacking order rather than assumed. A layer app.css no longer paints
+    composites nothing: the page that drops its overlays satisfies the criterion
+    more completely than the page that keeps them, so its absence is a factor of
+    1, never a failure. What must not happen is a full-viewport layer this model
+    has never heard of, and that is what is asserted instead.
     """
+    unmodelled = _full_viewport_layers(rules) - set(PAGE_OVERLAY_LAYERS)
+    assert not unmodelled, f"app.css paints full-viewport layers this model does not know: {sorted(unmodelled)}"
+
     column = _rule_for(rules, READING_COLUMN)
     column_z = column.get("z-index")
     column_z = float(column_z) if column_z and column.get("position") not in (None, "static") else None
     factor = 1.0
     for layer in PAGE_OVERLAY_LAYERS:
         decls = _rule_for(rules, layer)
-        assert decls, f"{layer} is missing from app.css"
+        if not decls:
+            continue  # app.css does not paint this layer at all
         layer_z = float(decls.get("z-index", 0))
         if column_z is not None and column_z > layer_z:
             continue  # the reading column paints above this layer
@@ -279,28 +322,90 @@ def page_overlay_factor(rules) -> float:
 # ── 1. contrast under the whole composited stack ────────────────────────
 
 
-def _surface_tokens(tokens) -> list[str]:
-    return [t for t in tokens if t == "--bg" or t.startswith(("--bg-", "--panel"))]
+_HEX_ONLY = re.compile(r"#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?\Z")
+_COLOUR_TERM = re.compile(r"var\((--[\w-]+)\)|#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?\b")
+
+
+def _opaque_stops(value: str, tokens: dict[str, str]) -> list[tuple[str, str]]:
+    """Every opaque colour a background value can paint, as (label, hex).
+
+    A gradient is read by every stop it names, not by one of them: all of them
+    are painted somewhere in the box and a stylesheet cannot know which one a
+    glyph lands on, so the lightest counts like the rest. Translucent stops are
+    not grounds — whatever is behind them is, and `test_prose_is_opaque` is what
+    keeps prose off them in the first place.
+    """
+    found: list[tuple[str, str]] = []
+    for match in _COLOUR_TERM.finditer(value):
+        name = match.group(1)
+        literal = (tokens.get(name, "") if name else match.group(0)).strip()
+        if _HEX_ONLY.match(literal):
+            found.append((name or literal, literal))
+    return found
+
+
+def _prose_grounds(rules, tokens) -> dict[str, str]:
+    """Every ground app.css paints prose on, as label -> hex.
+
+    Derived, never listed. Naming the surfaces by token prefix covered only the
+    tokens that happened to be called `--bg*` or `--panel*`, so a ground written
+    as a literal, or as a token named anything else, was outside the check
+    entirely — and the lightest ground on the page was one of those. Reading the
+    grounds off the prose rules instead means a surface is covered the day it is
+    declared rather than the day someone remembers to widen a tuple. The `:root`
+    surface tokens are unioned in so a token used only inside the accessibility
+    block is still checked.
+    """
+    grounds: dict[str, str] = {
+        token: value.strip()
+        for token, value in tokens.items()
+        if (token == "--bg" or token.startswith(("--bg-", "--panel")))
+        and _HEX_ONLY.match(value.strip())
+    }
+    seen = set(grounds.values())
+    for _media, sel, decls in _prose_rules(rules):
+        for prop in ("background", "background-color", "background-image"):
+            for name, literal in _opaque_stops(decls.get(prop, ""), tokens):
+                if literal in seen:
+                    continue
+                grounds[name if name.startswith("--") else f"{literal} on {sel}"] = literal
+                seen.add(literal)
+    return grounds
+
+
+@pytest.fixture(scope="module")
+def prose_grounds(rules, tokens) -> dict[str, str]:
+    return _prose_grounds(rules, tokens)
 
 
 @pytest.mark.parametrize("prose_token", PROSE_TOKENS)
 def test_prose_pairs_hold_contrast_under_page_and_extension_overlay(
-    prose_token, tokens, page_overlay_factor
+    prose_token, rules, tokens, prose_grounds, page_overlay_factor
 ):
-    """Every prose-on-surface pair survives the page's CRT plus a hostile overlay."""
+    """Every prose-on-ground pair survives the page's CRT plus a hostile overlay."""
+    # The derivation must not be able to go quiet: every prose rule that declares
+    # a background has to contribute a ground, or the colour reader has stopped
+    # understanding a syntax the stylesheet is using.
+    for _media, sel, decls in _prose_rules(rules):
+        declared = [decls[p] for p in ("background", "background-color", "background-image") if decls.get(p)]
+        if declared and not any(_opaque_stops(v, tokens) for v in declared):
+            assert all(_translucent_alphas(v) for v in declared), (
+                f"no ground could be read out of {sel}: {declared}"
+            )
+
     failures = []
-    for surface_token in _surface_tokens(tokens):
+    for label, ground in prose_grounds.items():
         fg = _hex_rgb(tokens[prose_token])
-        bg = _hex_rgb(tokens[surface_token])
+        bg = _hex_rgb(ground)
         page_fg = _over_black(fg, 1 - page_overlay_factor)
         page_bg = _over_black(bg, 1 - page_overlay_factor)
         full_fg = _over_black(page_fg, EXTENSION_BLACK_ALPHA)
         full_bg = _over_black(page_bg, EXTENSION_BLACK_ALPHA)
         ratio = _contrast(full_fg, full_bg)
-        floor = 7.0 if (prose_token, surface_token) == ("--text", "--bg") else 4.5
+        floor = 7.0 if (prose_token, label) == ("--text", "--bg") else 4.5
         if ratio < floor:
             failures.append(
-                f"{prose_token} on {surface_token}: "
+                f"{prose_token} on {label} ({ground}): "
                 f"{_contrast(fg, bg):.2f} bare, "
                 f"{_contrast(page_fg, page_bg):.2f} under the page's own overlay, "
                 f"{ratio:.2f} under page+extension (needs {floor})"
@@ -314,27 +419,50 @@ def test_prose_pairs_hold_contrast_under_page_and_extension_overlay(
 @pytest.mark.parametrize("condition", A11Y_CONDITIONS)
 def test_media_queries_neutralize_the_pages_own_overlay(condition, css, tokens):
     """Each signal turns the page's CRT off and flattens reading surfaces."""
+    base_rules = _rules(css)
     scoped = [
         (media, sel, decls)
-        for media, sel, decls in _rules(css)
+        for media, sel, decls in base_rules
         if condition.replace(" ", "") in media.replace(" ", "")
     ]
     assert scoped, f"app.css answers no @media ({condition})"
 
     for layer in PAGE_OVERLAY_LAYERS:
+        if not _rule_for(base_rules, layer):
+            continue  # a layer app.css does not paint needs no switching off
         hidden = any(
             _selector_matches(sel, layer) and decls.get("display") == "none"
             for _, sel, decls in scoped
         )
         assert hidden, f"@media ({condition}) leaves {layer} painting"
 
-    for surface in A11Y_OPAQUE_SURFACES:
-        matching = [decls for _, sel, decls in scoped if _selector_matches(sel, surface)]
-        assert matching, f"@media ({condition}) never flattens {surface}"
-        for decls in matching:
-            assert not _background_translucency(decls, tokens), (
-                f"@media ({condition}) leaves {surface} translucent: {decls}"
-            )
+    # Which surfaces have to end up flat is read off the stylesheet, not listed
+    # here: every ground a prose rule declares, whether or not anyone thought to
+    # name it. A tuple of surface names can be trimmed until it passes, and a
+    # presence test on it cannot tell a rule that flattens something from a rule
+    # that restates what was already flat.
+    prose_with_ground = [
+        (sel, decls)
+        for media, sel, decls in _prose_rules(base_rules)
+        if not media
+        and any(decls.get(p) for p in ("background", "background-color", "background-image"))
+    ]
+    assert prose_with_ground, "no prose rule declares a background; this scan is vacuous"
+    for sel, decls in prose_with_ground:
+        override: dict[str, str] = {}
+        for _m, block_sel, block_decls in scoped:
+            if _overrides(block_sel, sel):
+                override.update(block_decls)
+        effective = override or decls
+        assert not _background_translucency(effective, tokens), (
+            f"@media ({condition}) leaves {sel} translucent: {effective}"
+        )
+        painted = " ".join(
+            effective.get(p, "") for p in ("background", "background-color", "background-image")
+        )
+        assert "gradient(" not in painted, (
+            f"@media ({condition}) leaves {sel} on a gradient: {painted.strip()}"
+        )
 
     for _, sel, decls in scoped:
         assert not _background_translucency(decls, tokens), (
@@ -377,5 +505,15 @@ def test_prose_is_opaque(rules, tokens):
 
 
 def test_prose_rule_scan_is_not_vacuous(rules):
-    """Guard the classifier: the prose set must still be most of the stylesheet."""
-    assert len(list(_prose_rules(rules))) > 30
+    """Guard the classifier: it must still see the containers that carry body copy.
+
+    A bare floor was the wrong guard. It stood at 30 against a live reading of
+    84, so the classifier could lose every panel, story card, feed row and table
+    cell — the containers holding nearly all of the page's prose — and still
+    clear it by a wide margin. Name what has to stay classified instead.
+    """
+    prose = {sel for _media, sel, _decls in _prose_rules(rules)}
+    seen = set().union(*(_selector_parts(sel) for sel in prose)) if prose else set()
+    missing = [anchor for anchor in PROSE_ANCHORS if anchor not in seen]
+    assert not missing, f"the prose classifier no longer sees: {missing}"
+    assert len(prose) > 30
