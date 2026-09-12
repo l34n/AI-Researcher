@@ -16,6 +16,15 @@ cascade would, then composite a worst-case extension overlay on top and check
 the surviving WCAG ratio. A layer put back, a prose token dimmed, or a ground
 left taking its colour from whatever is behind it fails here rather than in
 someone's browser.
+
+Which grounds get read is derived from the rules, not listed: every rule that
+paints a background on a box the stylesheet shows can hold a line of text, the
+chrome outside the reading column included. Each one has to state its own
+colour -- the stack has to seal -- because "whatever is behind it" is exactly
+what an overlay extension takes away, and a ground that borrows from the
+backdrop is a ground no check can put a number on. What sits above that seal is
+composited rather than skipped, so a wash cannot hide behind the opaque layer
+under it.
 """
 
 from __future__ import annotations
