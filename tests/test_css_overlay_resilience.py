@@ -32,8 +32,15 @@ EXTENSION_BLACK_ALPHA = 0.25
 
 PROSE_TOKENS = ("--text", "--text-mid", "--text-dim")
 
-# The page's own two full-viewport decoration layers.
+# The page's own two full-viewport decoration layers. The stylesheet no longer
+# paints either; the names stay because the compositing model is stated in terms
+# of them, and a layer put back under one of these names has to be seen.
 PAGE_OVERLAY_LAYERS = ("body::before", "body::after")
+
+# Every decoration layer app.css used to paint over its own content: the two
+# body layers and the pair the bars carried. A rule addressing any of them is a
+# layer coming back, and so is a media block switching off one that is gone.
+REMOVED_LAYERS = PAGE_OVERLAY_LAYERS + (".topbar::after", ".ingest-status::after")
 
 # The chrome bars: sticky strips that paint a ground of their own and carry
 # their own text, outside the reading column.
@@ -170,6 +177,15 @@ def _overrides(block_selector: str, base_selector: str) -> bool:
     `.panel`, and a rule written as one list overrides each rule in it.
     """
     return bool(_selector_parts(block_selector) & _selector_parts(base_selector))
+
+
+def _rules_targeting(rules, selectors) -> list[str]:
+    """Every rule, in any media, whose selector addresses one of `selectors`."""
+    return [
+        f"@media {media} {sel}" if media else sel
+        for media, sel, _decls in rules
+        if any(_selector_matches(sel, wanted) for wanted in selectors)
+    ]
 
 
 def _rule_for(rules, selector: str, media: str = "") -> dict[str, str]:
@@ -347,7 +363,42 @@ def page_overlay_factor(rules) -> float:
     return factor
 
 
-# ── 1. contrast under the whole composited stack ────────────────────────
+# ── 1. the page paints no overlay layer of its own ──────────────────────
+
+
+def test_no_crt_layers_remain(css, rules):
+    """app.css composites nothing over its own content.
+
+    Darkening is multiplicative and contrast is not, so every layer the page
+    paints over its own text is spent out of the budget the one layer it cannot
+    see — the extension's — is about to take. The page that paints none of its
+    own hands that budget over whole, and this is the check that keeps it so:
+    not the reordering, which only moved the spending around, but the absence.
+    """
+    revived = _rules_targeting(rules, REMOVED_LAYERS)
+    assert not revived, f"app.css still addresses a removed CRT layer: {revived}"
+
+    blended = [
+        f"@media {media} {sel}" if media else sel
+        for media, sel, decls in rules
+        if decls.get("mix-blend-mode", "normal") != "normal"
+    ]
+    assert not blended, f"app.css still blends its own layers: {blended}"
+
+    assert not _full_viewport_layers(rules), (
+        f"app.css still paints a full-viewport layer: {sorted(_full_viewport_layers(rules))}"
+    )
+
+    scanlines = [
+        f"{sel} -> {prop}"
+        for _media, sel, decls in rules
+        for prop in ("background", "background-color", "background-image")
+        if "repeating-linear-gradient" in decls.get(prop, "")
+    ]
+    assert not scanlines, f"a scanline gradient is still painted: {scanlines}"
+
+
+# ── 2. contrast under the whole composited stack ────────────────────────
 
 
 _HEX_ONLY = re.compile(r"#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?\Z")
@@ -441,7 +492,7 @@ def test_prose_pairs_hold_contrast_under_page_and_extension_overlay(
     assert not failures, "\n".join(failures)
 
 
-# ── 2. the text the chrome paints on its own ground ─────────────────────
+# ── 3. the text the chrome paints on its own ground ─────────────────────
 
 
 def _backdrop(rules, tokens) -> tuple[float, float, float]:
@@ -549,7 +600,7 @@ def test_chrome_text_survives_the_extension_overlay(bar, rules, tokens):
     assert not failures, "\n".join(failures)
 
 
-# ── 3. the accessibility signals an overlay user already carries ─────────
+# ── 4. the accessibility signals an overlay user already carries ─────────
 
 
 @pytest.mark.parametrize("condition", A11Y_CONDITIONS)
@@ -606,7 +657,7 @@ def test_media_queries_neutralize_the_pages_own_overlay(condition, css, tokens):
         )
 
 
-# ── 4. prose contrast comes from opaque colour, never from compositing ──
+# ── 5. prose contrast comes from opaque colour, never from compositing ──
 
 
 def _prose_rules(rules):

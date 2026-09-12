@@ -1,8 +1,11 @@
 /* AI Researcher — NEON GRID
    Cyberpunk-retro skin over a working dashboard. The look is loud; the reading
-   surface is not. Glow, scanlines and chroma live on the chrome — bars, badges,
-   rules, headers — while headlines and body copy stay high-contrast and unlit,
-   because this is a page someone reads for twenty minutes every morning.
+   surface is not. Glow and chroma live on the chrome — bars, badges, rules,
+   headers — while headlines and body copy stay high-contrast and unlit, because
+   this is a page someone reads for twenty minutes every morning. Nothing is
+   composited over anything: no scanlines, no vignette, no blend modes. The one
+   layer that still lands on this page is a browser extension's, and the skin is
+   built to be legible with that layer on top of it.
 
    Committed dark. There is no light variant: a neon theme rendered on white is
    just a broken neon theme, so `prefers-color-scheme: light` is answered with
@@ -94,32 +97,18 @@ body {
   background-attachment: fixed;
 }
 
-/* CRT scanlines + vignette. Fixed, inert, and cheap — one composited layer.
+/* No CRT layer here, and that is the hardening.
 
-   They sit at z-index 0: above the body's own background, below the reading
-   column at .wrap's z-index 1. They used to sit at 9999/9998, on top of
-   everything, which cost prose a multiply and a vignette before anything else
-   touched it — and the thing that touches it next is the one layer this page
-   cannot out-stack or remove, a CRT/night-shift/inverter extension painting
-   the whole viewport at 2147483647. Darkening is multiplicative and contrast
-   is not, so two of our own layers plus theirs put body copy under AA no
-   matter how bright the ink. The bars carry no scanlines of their own either:
-   at 16% over --text-dim their own scale text read 3.77:1 under the same
-   extension. Below, the gutters and the gaps between panels are transparent,
-   so both layers still show through .wrap. */
-body::before {
-  content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
-  background: repeating-linear-gradient(
-    180deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px
-  );
-  mix-blend-mode: multiply;
-}
-body::after {
-  content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
-  /* Deliberately weak. A CRT vignette strong enough to notice is also strong
-     enough to dim the right-hand sidebar, and that column holds real content. */
-  background: radial-gradient(140% 110% at 50% 50%, transparent 72%, rgba(0,0,0,.30));
-}
+   The page used to paint scanlines and a vignette across the viewport, first at
+   z-index 9999/9998 and then at 0 under the reading column. Both are gone.
+   Darkening is multiplicative and contrast is not — the +0.05 flare term in the
+   WCAG formula means a uniform multiply always loses ratio — and the layer that
+   matters is the one this page can neither out-stack nor remove: a CRT,
+   night-shift or inverter extension painting the whole viewport at 2147483647.
+   Whatever we composite first is taken out of the budget that layer is about to
+   claim, so we composite nothing and it gets the budget whole. The look carries
+   on the parts that cost no contrast: hue, glow, chroma, type.
+   tests/test_css_overlay_resilience.py is what keeps a layer from coming back. */
 a { color: var(--accent); text-decoration: none; transition: color .12s, text-shadow .12s; }
 a:hover { text-decoration: none; color: #6ff8ff; text-shadow: var(--glow-soft); }
 h1,h2,h3,h4 { margin: 0; font-weight: 700; line-height: 1.3; }
@@ -717,21 +706,20 @@ button.fb:hover { color: var(--cyan); border-color: var(--cyan); }
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--violet); }
 
-/* Scanlines and pulsing are decoration; motion sensitivity outranks them. */
+/* Pulsing is decoration; motion sensitivity outranks it. */
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
-  body::before { display: none; }
 }
 
 /* The reader who already told the browser.
 
    Someone running a CRT filter, a night-shift tint or a dark-mode inverter has
    usually set one of these three as well, and all three say the same thing: no
-   more composited layers. So the page stops adding its own — both CRT layers
-   go — and every ground that carries text flattens to the colour it was
-   approximating. The neon is untouched: it lives
-   in the hues and the glows, not in the blending. What goes is only the
-   compositing, the part that stacks with a layer this page never gets to see.
+   more composited layers. The page has none of its own left to drop, so what
+   this block does is flatten every ground that carries text to the colour it
+   was approximating. The neon is untouched: it lives in the hues and the glows,
+   not in the blending. What goes is only the compositing, the part that stacks
+   with a layer this page never gets to see.
 
    The per-category badge tints are left alone on purpose: each is a 7–10% wash
    over an opaque panel under an opaque neon hex, so none of them is carrying
@@ -739,8 +727,6 @@ button.fb:hover { color: var(--cyan); border-color: var(--cyan); }
 @media (prefers-contrast: more),
        (prefers-reduced-transparency: reduce),
        (forced-colors: active) {
-  body::before, body::after { display: none; }
-
   body { background: var(--bg); }
   .topbar { background: var(--bg-raise); backdrop-filter: none; }
   .ingest-status { background: var(--bg-raise); }
