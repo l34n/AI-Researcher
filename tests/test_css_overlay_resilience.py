@@ -302,6 +302,21 @@ def _background_translucency(decls: dict[str, str], tokens: dict[str, str]) -> l
     return offenders
 
 
+def _opaque_ground(decls: dict[str, str], tokens: dict[str, str]) -> str | None:
+    """The flat opaque colour a background stack ends in, if it declares one.
+
+    The absence of a translucent background is not the presence of an opaque one:
+    a rule that declares no background at all, or declares `transparent`, clears
+    every translucency check and still leaves its text standing on whatever
+    happens to be behind it — which under an overlay extension is not this page.
+    """
+    for prop in ("background", "background-color"):
+        value = decls.get(prop)
+        if value and _is_flat_colour(_split_top(value)[-1], tokens):
+            return _split_top(value)[-1]
+    return None
+
+
 # ── fixtures ────────────────────────────────────────────────────────────
 
 
@@ -614,14 +629,13 @@ def test_media_queries_neutralize_the_pages_own_overlay(condition, css, tokens):
     ]
     assert scoped, f"app.css answers no @media ({condition})"
 
-    for layer in PAGE_OVERLAY_LAYERS:
-        if not _rule_for(base_rules, layer):
-            continue  # a layer app.css does not paint needs no switching off
-        hidden = any(
-            _selector_matches(sel, layer) and decls.get("display") == "none"
-            for _, sel, decls in scoped
-        )
-        assert hidden, f"@media ({condition}) leaves {layer} painting"
+    # Nothing here switches a CRT layer off any more, because there is none to
+    # switch off. A rule addressing one is either a layer that came back or a
+    # dead rule promising a flattening it no longer performs.
+    revived = _rules_targeting(scoped, REMOVED_LAYERS)
+    assert not revived, (
+        f"@media ({condition}) addresses a layer app.css no longer paints: {revived}"
+    )
 
     # Which surfaces have to end up flat is read off the stylesheet, not listed
     # here: every ground a prose rule declares, whether or not anyone thought to
@@ -640,7 +654,11 @@ def test_media_queries_neutralize_the_pages_own_overlay(condition, css, tokens):
         for _m, block_sel, block_decls in scoped:
             if _overrides(block_sel, sel):
                 override.update(block_decls)
-        effective = override or decls
+        # The cascade, not the override by itself. A block rule that restyles a
+        # prose surface without declaring a background leaves the base one
+        # painting, and reading the override alone let that base ground pass as
+        # though the block had replaced it.
+        effective = {**decls, **override}
         assert not _background_translucency(effective, tokens), (
             f"@media ({condition}) leaves {sel} translucent: {effective}"
         )
@@ -649,6 +667,9 @@ def test_media_queries_neutralize_the_pages_own_overlay(condition, css, tokens):
         )
         assert "gradient(" not in painted, (
             f"@media ({condition}) leaves {sel} on a gradient: {painted.strip()}"
+        )
+        assert _opaque_ground(effective, tokens), (
+            f"@media ({condition}) gives {sel} no opaque ground of its own: {painted.strip()!r}"
         )
 
     for _, sel, decls in scoped:
