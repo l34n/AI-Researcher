@@ -732,10 +732,14 @@ button.fb:hover { color: var(--cyan); border-color: var(--cyan); }
    Someone running a CRT filter, a night-shift tint or a dark-mode inverter has
    usually set one of these three as well, and all three say the same thing: no
    more composited layers. So the page stops adding its own — both CRT layers
-   go, on the body and on the chrome — and every translucent ground flattens to
-   the colour it was approximating. The neon is untouched: it lives in the hues
-   and the glows, not in the blending. What goes is only the compositing, which
-   is the part that stacks with a layer this stylesheet never gets to see. */
+   go, on the body and on the chrome — and every ground that carries text
+   flattens to the colour it was approximating. The neon is untouched: it lives
+   in the hues and the glows, not in the blending. What goes is only the
+   compositing, the part that stacks with a layer this page never gets to see.
+
+   The per-category badge tints are left alone on purpose: each is a 7–10% wash
+   over an opaque panel under an opaque neon hex, so none of them is carrying
+   any contrast that flattening would return. */
 @media (prefers-contrast: more),
        (prefers-reduced-transparency: reduce),
        (forced-colors: active) {
@@ -754,10 +758,9 @@ button.fb:hover { color: var(--cyan); border-color: var(--cyan); }
   .brief code, .empty code { background: var(--code-ground); }
   select, input[type=search], input[type=text] { background: var(--bg-sink); }
 
-  .btn, .badge, .pill, .chip, .term { background: var(--bg-raise); }
-  nav.tabs a:hover, nav.tabs a.on, a.pill:hover, .chip:hover, .term:hover {
-    background: var(--bg-raise);
-  }
+  .btn, .badge, .pill, .chip, .term, .ingest-stage { background: var(--bg-raise); }
+  .btn:hover, nav.tabs a:hover, nav.tabs a.on,
+  a.pill:hover, .chip:hover, .term:hover { background: var(--bg-raise); }
   ::selection { background: var(--magenta); color: #12001a; }
 
   .brief hr, .brief h2::before, .brand::after, .chip .n { opacity: 1; }
