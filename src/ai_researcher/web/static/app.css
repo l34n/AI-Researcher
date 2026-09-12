@@ -19,6 +19,13 @@
   --border:    #241f4d;
   --border-hi: #3b2f7a;
 
+  /* Cyan tints for reading surfaces, pre-composited over --panel rather than
+     left as rgba(). A translucent reading surface borrows its contrast from
+     whatever is behind it, and under an overlay extension that is no longer
+     only this page — so the grounds prose sits on are flat everywhere. */
+  --panel-tint:  #0a1629;  /* was rgba(0,240,255,.05) over --panel */
+  --code-ground: #0a1d30;  /* was rgba(0,240,255,.08) over --panel */
+
   /* ── type: cooled white, never pure ──
      Every step is sized against a worst case the page does not control: a
      browser overlay extension compositing 25% black over the whole viewport.
@@ -320,7 +327,8 @@ nav.tabs a.on::after {
   padding: 10px 26px 10px 14px; border-bottom: 1px solid var(--border);
   font: 700 10.5px var(--mono); text-transform: uppercase; letter-spacing: .18em;
   color: var(--cyan); text-shadow: var(--glow-soft);
-  background: linear-gradient(180deg, rgba(0,240,255,.05), transparent);
+  /* pre-composited over --panel-hi, the panel gradient behind this strip */
+  background: linear-gradient(180deg, #111d38, var(--panel-hi));
 }
 .panel > h3::before { content: "▍"; color: var(--magenta); text-shadow: var(--glow-magenta); }
 .panel > h3 > span:last-child:not(:first-child) { margin-left: auto; color: var(--text-dim); }
@@ -346,7 +354,7 @@ nav.tabs a.on::after {
 }
 .brief li strong { color: var(--text); }
 .brief code {
-  font: 12.5px var(--mono); background: rgba(0,240,255,.08);
+  font: 12.5px var(--mono); background: var(--code-ground);
   border: 1px solid rgba(0,240,255,.18);
   padding: 1px 5px; border-radius: var(--radius-sm); color: var(--cyan);
 }
@@ -454,7 +462,8 @@ nav.tabs a.on::after {
 .badge.c-benchmark-eval        { color:#8fa6ff; border-color:rgba(143,166,255,.45);background:rgba(143,166,255,.09); box-shadow:0 0 10px rgba(143,166,255,.18); }
 .badge.c-policy-regulation     { color:#ff2e97; border-color:rgba(255,46,151,.5);  background:rgba(255,46,151,.10);  box-shadow:0 0 10px rgba(255,46,151,.2); }
 .badge.c-safety-incident       { color:#ff3b5c; border-color:rgba(255,59,92,.5);   background:rgba(255,59,92,.10);   box-shadow:0 0 10px rgba(255,59,92,.2); }
-.badge.c-opinion-analysis      { color:#9a9ccb; border-color:rgba(154,156,203,.35);background:rgba(154,156,203,.07); }
+/* the one badge with no neon of its own; it tracks the prose palette instead */
+.badge.c-opinion-analysis      { color:var(--text-mid); border-color:rgba(194,198,234,.35);background:rgba(194,198,234,.07); }
 
 .pill {
   display: inline-flex; align-items: center; gap: 4px;
@@ -534,7 +543,7 @@ a.pill:hover {
 }
 .item:last-child { border-bottom: 0; }
 .item:hover {
-  background: rgba(0,240,255,.045);
+  background: var(--panel-tint);
   box-shadow: inset 2px 0 0 var(--cyan);
 }
 .item .main { flex: 1; min-width: 0; }
@@ -625,7 +634,7 @@ a.pill:hover {
 
 .filters { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; margin-bottom: 14px; }
 select, input[type=search], input[type=text] {
-  background: rgba(3,3,9,.8); border: 1px solid var(--border); color: var(--text);
+  background: var(--bg-sink); border: 1px solid var(--border); color: var(--text);
   padding: 7px 11px; border-radius: var(--radius-sm); font: 13px var(--mono);
 }
 select:focus, input:focus {
@@ -644,7 +653,7 @@ th {
   background: #0d0d24; text-shadow: var(--glow-soft);
 }
 td { padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--text-mid); }
-tr:hover td { background: rgba(0,240,255,.05); }
+tr:hover td { background: var(--panel-tint); }
 td.name { color: var(--text); font-weight: 600; }
 td.num { text-align: right; font: 12px var(--mono); font-variant-numeric: tabular-nums; }
 .st { font: 700 11.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
@@ -662,7 +671,7 @@ td.num { text-align: right; font: 12px var(--mono); font-variant-numeric: tabula
   text-shadow: var(--glow-magenta);
 }
 .empty code {
-  font: 12.5px var(--mono); background: rgba(0,240,255,.08);
+  font: 12.5px var(--mono); background: var(--code-ground);
   border: 1px solid rgba(0,240,255,.22);
   padding: 2px 7px; border-radius: var(--radius-sm); color: var(--cyan);
 }
@@ -685,7 +694,12 @@ td.num { text-align: right; font: 12px var(--mono); font-variant-numeric: tabula
 .pill.fresh-aging { color: var(--amber); }
 .pill.fresh-stale, .pill.fresh-superseded { color: var(--red); }
 .pill.fresh-revalidated { color: var(--cyan); }
-.story.stale { opacity: .78; }
+/* Stale used to be opacity: .78 across the whole card. Opacity composites, so
+   an overlay extension multiplied it a second time and took the headline, the
+   summary and the meta line under AA together. Demote with colour instead —
+   the frame goes quiet and the headline drops one prose step, both opaque. */
+.story.stale { border-color: #1a1636; }
+.story.stale h3 a { color: var(--text-mid); }
 .brief-sources { margin-top: 12px; font: 12px var(--mono); color: var(--text-dim); }
 .brief-stale { color: var(--amber); font-size: 13px; }
 .brief-regen { margin-top: 12px; }
