@@ -754,11 +754,14 @@ button.fb:hover { color: var(--cyan); border-color: var(--cyan); }
 
   .panel, .story { background: var(--panel); }
   .panel > h3 { background: var(--panel-hi); }
-  .item:hover { background: var(--panel-tint); }
-  tr:hover td { background: var(--panel-tint); }
   th { background: var(--panel-hi); }
-  .brief code, .empty code { background: var(--code-ground); }
-  select, input[type=search], input[type=text] { background: var(--bg-sink); }
+
+  /* `.item:hover`, `tr:hover td`, `.brief code`, `.empty code` and the form
+     controls used to be listed here re-declaring the exact value they were
+     overriding. Each of those grounds is already one flat opaque colour in the
+     base cascade, so the rule changed nothing and only made the block look like
+     it was covering the surface. There is nothing to flatten, so there is no
+     rule. */
 
   .btn, .badge, .pill, .chip, .term, .ingest-stage { background: var(--bg-raise); }
   .btn:hover, nav.tabs a:hover, nav.tabs a.on,

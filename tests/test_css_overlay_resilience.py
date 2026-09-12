@@ -1306,3 +1306,87 @@ def test_all_text_grounds_clear_aa_under_the_extension_overlay(rules, tokens):
         f"these grounds are reached but no reading step is weighed against them any "
         f"more, so the 4.5 floor no longer applies to them: {unweighed}"
     )
+
+
+# ── 8. the accessibility block has to actually change something ──────────
+#
+# The block promises to flatten every ground that carries text for a reader who
+# has already told the browser they cannot take another composited layer. A rule
+# that re-declares the value it is overriding keeps that promise in form and
+# breaks it in substance: the scan above it can see a rule is present for the
+# surface and cannot see that the rule does nothing.
+
+# The three signals, as the stylesheet spells them. A rule arriving under any of
+# them is in the block.
+A11Y_SIGNALS = ("prefers-contrast", "prefers-reduced-transparency", "forced-colors")
+
+
+def _covers(outer: str, inner: str) -> bool:
+    """Whether `outer` matches every element `inner` matches.
+
+    Compared by constraint, not by text: `.badge` covers
+    `.badge.c-research`, and `.panel > h3` covers itself. Combinator strictness
+    is not modelled -- a `>` in `outer` against a descendant in `inner` would be
+    read as covering when it is not -- which is sound for this stylesheet, where
+    the block writes `>` only where the base rule it overrides writes it too.
+    """
+    return _key(outer) <= _key(inner) and _subsequence(_ancestor_keys(outer), _ancestor_keys(inner))
+
+
+def _a11y_rules(rules):
+    return [
+        (index, condition, part, decls)
+        for index, condition, part, decls in _selector_rules(rules)
+        if any(signal in condition for signal in A11Y_SIGNALS)
+    ]
+
+
+def _base_rules(rules):
+    return [
+        (index, condition, part, decls)
+        for index, condition, part, decls in _selector_rules(rules)
+        if not condition
+    ]
+
+
+def _same_value(a: str, b: str, tokens: dict[str, str]) -> bool:
+    """Whether two declaration values paint the same thing.
+
+    Resolved through the palette and whitespace-normalised, so
+    `background: var(--panel)` and `background: #0b0b1e` are one value and the
+    restatement cannot hide behind a token name.
+    """
+    def norm(value: str) -> str:
+        layers = [_resolve(term, tokens) for term in _split_top(value)]
+        return ", ".join(" ".join(layer.split()) for layer in layers).lower()
+
+    return norm(a) == norm(b)
+
+
+def test_a11y_not_vacuous_no_block_rule_restates_what_it_overrides(rules, tokens):
+    """No rule in the block is an exact restatement of what it overrides."""
+    block = _a11y_rules(rules)
+    base = _base_rules(rules)
+    assert block, "app.css answers none of the accessibility signals"
+
+    overriding, vacuous = 0, []
+    for _bi, condition, block_sel, block_decls in block:
+        for _i, _c, base_sel, base_decls in base:
+            if not _covers(block_sel, base_sel):
+                continue
+            shared = [prop for prop in block_decls if prop in base_decls]
+            if not shared or len(shared) != len(block_decls):
+                continue  # the block declares something the base rule does not
+            overriding += 1
+            if all(_same_value(block_decls[prop], base_decls[prop], tokens) for prop in shared):
+                vacuous.append(
+                    f"@media ({condition.splitlines()[0].strip()} ...) {block_sel} "
+                    f"restates {base_sel}: "
+                    + "; ".join(f"{prop}: {block_decls[prop]}" for prop in shared)
+                )
+
+    assert overriding, "no rule in the block overrides a base rule; this scan is vacuous"
+    assert not vacuous, (
+        "these rules say nothing, so the block's promise to flatten the surface is "
+        "kept in form only:\n" + "\n".join(sorted(set(vacuous)))
+    )
