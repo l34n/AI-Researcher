@@ -9,7 +9,7 @@ opaque colour or borrowed from whatever happens to be behind.
 
 app.css spends none of that budget: it paints no layer of its own over its own
 content, which is what `test_no_crt_layers_remain` holds. The compositing model
-stays anyway, because the way a layer comes back is quietly — so these tests
+stays anyway, because a layer comes back quietly — so these tests
 read app.css as a stylesheet rather than as text, resolve the `:root` palette,
 composite whatever the page does stack over a reading surface the way the
 cascade would, then composite a worst-case extension overlay on top and check

@@ -109,6 +109,7 @@ body {
    claim, so we composite nothing and it gets the budget whole. The look carries
    on the parts that cost no contrast: hue, glow, chroma, type.
    tests/test_css_overlay_resilience.py is what keeps a layer from coming back. */
+
 a { color: var(--accent); text-decoration: none; transition: color .12s, text-shadow .12s; }
 a:hover { text-decoration: none; color: #6ff8ff; text-shadow: var(--glow-soft); }
 h1,h2,h3,h4 { margin: 0; font-weight: 700; line-height: 1.3; }
