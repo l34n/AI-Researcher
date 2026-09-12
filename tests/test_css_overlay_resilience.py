@@ -7,13 +7,15 @@ only budget it controls is its own: how much darkening app.css has already
 spent before the extension's lands, and whether prose contrast is carried by
 opaque colour or borrowed from whatever happens to be behind.
 
-These tests read app.css as a stylesheet rather than as text: they resolve the
-`:root` palette, composite the page's own CRT layers over each prose pair the
-way the cascade actually would, then composite a worst-case extension overlay
-on top and check the surviving WCAG ratio. The compositing model is derived
-from the stylesheet's own declarations, so moving the reading column back under
-the CRT layers, or dimming a prose token, fails here rather than in someone's
-browser.
+app.css spends none of that budget: it paints no layer of its own over its own
+content, which is what `test_no_crt_layers_remain` holds. The compositing model
+stays anyway, because the way a layer comes back is quietly — so these tests
+read app.css as a stylesheet rather than as text, resolve the `:root` palette,
+composite whatever the page does stack over a reading surface the way the
+cascade would, then composite a worst-case extension overlay on top and check
+the surviving WCAG ratio. A layer put back, a prose token dimmed, or a ground
+left taking its colour from whatever is behind it fails here rather than in
+someone's browser.
 """
 
 from __future__ import annotations
