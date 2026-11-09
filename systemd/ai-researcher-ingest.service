@@ -1,5 +1,5 @@
 [Unit]
-Description=AI Researcher ingest run
+Description=AI Researcher hourly fetch (no chat-model work)
 After=network-online.target
 Wants=network-online.target
 
@@ -7,9 +7,14 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=%h/AI-Researcher
 ExecStart=%h/AI-Researcher/.venv/bin/ai-researcher run
+# Fetch, heuristics, embeddings, clustering and the templated brief only.
+# Chat-model stages run in ai-researcher-analyze.service on a slower cadence.
+Environment=AIR_ENRICH_BUDGET=0
+Environment=AIR_JUDGE_BUDGET=0
+Environment=AIR_RESEARCH_BUDGET=0
+Environment=AIR_BRIEF_LLM=0
 
-# A full run fetches ~60 sources, paces Reddit at ~75s per subreddit, and then
-# spends its model budget. Generous ceiling so a slow run is not killed midway.
+# Reddit pacing makes a fetch take a few minutes; generous ceiling.
 TimeoutStartSec=2700
 
 NoNewPrivileges=true

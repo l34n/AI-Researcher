@@ -93,6 +93,8 @@ class Settings:
     research_budget: int = 4
     research_time_budget: int = 900
     research_threshold: float = 0.62
+    # False skips the model-written brief and stores the templated one.
+    brief_llm: bool = True
 
     # Conservative local default. Empty still auto-picks, but auto-pick
     # refuses to load a 30B+ model just because it is installed.
@@ -155,6 +157,7 @@ class Settings:
             ollama_judge_model=_env("AIR_JUDGE_MODEL") or _env("OLLAMA_JUDGE_MODEL"),
             ollama_research_model=_env("AIR_RESEARCH_MODEL") or _env("OLLAMA_RESEARCH_MODEL"),
             ollama_brief_model=_env("AIR_BRIEF_MODEL") or _env("OLLAMA_BRIEF_MODEL"),
+            brief_llm=_env_bool("AIR_BRIEF_LLM", True),
             max_model_memory_gb=_env_float("AIR_MAX_MODEL_MEMORY_GB", 8.0),
             max_context=_env_int("AIR_MAX_CONTEXT", 8192),
             max_concurrent_generations=_env_int("AIR_MAX_CONCURRENT_GEN", 2),

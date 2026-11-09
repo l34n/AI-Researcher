@@ -1,5 +1,5 @@
 [Unit]
-Description=Hourly AI Researcher ingest
+Description=Hourly AI Researcher fetch
 Documentation=file:%h/AI-Researcher/README.md
 
 [Timer]

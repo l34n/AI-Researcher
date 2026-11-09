@@ -1,0 +1,21 @@
+[Unit]
+Description=AI Researcher model pass (enrich + deep research over stored items)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/AI-Researcher
+ExecStart=%h/AI-Researcher/.venv/bin/ai-researcher run --no-ingest
+# Runs twice a day instead of 24x, so each pass covers a larger backlog.
+Environment=AIR_ENRICH_BUDGET=120
+Environment=AIR_ENRICH_TIME_BUDGET=1200
+Environment=AIR_RESEARCH_BUDGET=4
+
+TimeoutStartSec=3600
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/AI-Researcher/data

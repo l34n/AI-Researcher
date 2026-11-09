@@ -1,0 +1,13 @@
+[Unit]
+Description=Twice-daily AI Researcher model pass
+Documentation=file:%h/AI-Researcher/README.md
+
+[Timer]
+# Morning catches overnight items; 22:00 follows the evening (US) posting peak.
+OnCalendar=*-*-* 07:00:00
+OnCalendar=*-*-* 22:00:00
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

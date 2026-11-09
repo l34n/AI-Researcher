@@ -464,7 +464,8 @@ async def generate_brief(
     provenance: dict[str, Any] = {}
     brief_attempts = 0
 
-    if stories and probed:
+    use_model = bool(getattr(client.settings, "brief_llm", True))
+    if stories and probed and use_model:
         model_used = _client_model(client, premium=True, role="brief")
         fingerprint = brief_fingerprint(
             day=day, model=model_used, stories=stories, ready=ready, rising=rising,

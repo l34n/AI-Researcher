@@ -28,7 +28,7 @@ fi
 # %h expands to the *service* home, which is what we want, but the units also
 # hardcode the project as ~/AI-Researcher. Rewrite if it lives elsewhere.
 mkdir -p "$UNIT_DIR"
-for unit in ai-researcher.service ai-researcher-public.service ai-researcher-ingest.service ai-researcher-ingest.timer; do
+for unit in ai-researcher.service ai-researcher-public.service ai-researcher-ingest.service ai-researcher-ingest.timer ai-researcher-analyze.service ai-researcher-analyze.timer; do
   sed "s|%h/AI-Researcher|$PROJECT_DIR|g" "$PROJECT_DIR/systemd/$unit" > "$UNIT_DIR/$unit"
   echo "  installed $UNIT_DIR/$unit"
 done
@@ -37,6 +37,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now ai-researcher.service
 systemctl --user enable --now ai-researcher-public.service
 systemctl --user enable --now ai-researcher-ingest.timer
+systemctl --user enable --now ai-researcher-analyze.timer
 
 # Without lingering, user services stop at logout and never start at boot.
 if ! loginctl show-user "$USER" --property=Linger 2>/dev/null | grep -q "Linger=yes"; then

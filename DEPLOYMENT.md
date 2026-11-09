@@ -172,8 +172,9 @@ Enabling that unit is the act of exposing 8898, with the database consequences
 above, so back up before the first start and take the port down by disabling
 the unit, not by editing `.env`.
 
-`scripts/install-systemd.sh` in the repo installs those services + the hourly
-timer. Not enabled yet — wait until the ingest bug is resolved so the timer
+`scripts/install-systemd.sh` in the repo installs those services, the hourly
+fetch timer (`ai-researcher-ingest.timer`, no chat-model work) and the
+twice-daily model pass (`ai-researcher-analyze.timer`, 07:00 and 22:00). Not enabled yet — wait until the ingest bug is resolved so the timer
 does not spin uselessly.
 
 ## Switching between Ollama and OpenRouter (APE-708)
@@ -252,6 +253,8 @@ run given the larger call footprint.
 ### Cost containment
 
 - `AIR_DAILY_MODEL_CALLS` caps total model calls per calendar day (currently 250).
-- `AIR_ENRICH_BUDGET` / `AIR_JUDGE_BUDGET` / `AIR_RESEARCH_BUDGET` cap per-role calls per run.
+- `AIR_ENRICH_BUDGET` / `AIR_JUDGE_BUDGET` / `AIR_RESEARCH_BUDGET` cap per-role calls per run; 0 skips that model pass.
+- `AIR_BRIEF_LLM=0` skips the model-written brief (the templated brief is stored instead).
+- The systemd units override budgets per timer: the hourly fetch sets all of them to 0, the twice-daily analyze pass raises enrichment.
 - To rehearse without spending, run `ai-researcher run --no-ingest` — it re-analyses items already in the DB.
 - Prefer the cheapest OpenRouter model (`qwen/qwen3.7-flash` at $0.03/M) for casual runs. `google/gemini-2.5-flash` is 10× the workhorse cost.

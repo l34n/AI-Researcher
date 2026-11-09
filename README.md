@@ -36,7 +36,8 @@ Then install it as a background service:
 ./scripts/install-systemd.sh
 ```
 
-That runs the dashboard continuously, ingests once an hour, and brings up the
+That runs the dashboard continuously, fetches once an hour, runs the chat-model
+pass twice a day (see "Scheduling" below), and brings up the
 read-only public instance on port 8898 as `ai-researcher-public.service` (see
 "Public instance" below).
 
@@ -144,7 +145,9 @@ resource here:
 
 Set `AIR_ENRICH_BUDGET` / `AIR_ENRICH_TIME_BUDGET` to match your hardware.
 Deep research is bounded separately by `AIR_RESEARCH_BUDGET` /
-`AIR_RESEARCH_TIME_BUDGET` / `AIR_RESEARCH_THRESHOLD`.
+`AIR_RESEARCH_TIME_BUDGET` / `AIR_RESEARCH_THRESHOLD`. A budget of 0 skips that
+model pass entirely; `AIR_BRIEF_LLM=0` skips the model-written brief and stores
+the templated one.
 
 ## Commands
 
@@ -443,7 +446,28 @@ fetched but keeps its history.
 
 ## Operational notes
 
-**Runs are long and that is by design.** A full cycle is typically 15–25 minutes:
+**Scheduling: fetch hourly, think twice a day.** `install-systemd.sh` installs
+two timers that share the ingest lock:
+
+| Unit | Cadence | Does |
+|---|---|---|
+| `ai-researcher-ingest.timer` | hourly | `run` with every chat budget at 0 and `AIR_BRIEF_LLM=0`: fetch, heuristics, embeddings, clustering, templated brief. A few minutes, mostly Reddit pacing; seconds of GPU time. |
+| `ai-researcher-analyze.timer` | 07:00 and 22:00 | `run --no-ingest` with larger budgets: model enrichment and deep research over everything fetched since the last pass. |
+
+Fetching hourly keeps high-churn feeds (Reddit, Hacker News, Techmeme) from
+rolling items out of their windows between runs; the chat model, the expensive
+part on a small GPU, runs only twice a day. Items fetched between passes show
+their heuristic summary until the next model pass. Per-unit budgets are set
+with `Environment=` lines in `systemd/`, which override `.env`. To run a model
+pass now: `systemctl --user start ai-researcher-analyze.service`.
+
+On a 4B local model the judge and brief stages rarely produce usable output
+(judgments are not promoted; briefs fail validation and fall back to the
+template), so `.env.example` documents `AIR_JUDGE_BUDGET=0` and
+`AIR_BRIEF_LLM=0` as the small-GPU setting. Re-enable them with a larger or
+hosted model.
+
+**Full runs are long and that is by design.** A full `run` with model budgets is typically 15–25 minutes:
 Reddit's rate limit forces ~75s between subreddits, and the model pass spends its
 budget at roughly 20s per item on this hardware. Nothing is blocked meanwhile —
 the dashboard serves from the database throughout, and every stage commits as it
