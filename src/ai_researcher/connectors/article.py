@@ -75,7 +75,7 @@ def extract_article(html: str, *, limit: int = ARTICLE_CHARS) -> str:
     if not raw.strip():
         return ""
     try:
-        from selectolax.parser import HTMLParser
+        from selectolax.lexbor import LexborHTMLParser as HTMLParser
         tree = HTMLParser(raw)
     except Exception:
         return strip_html(raw, limit)

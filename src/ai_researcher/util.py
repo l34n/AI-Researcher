@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from dateutil import parser as date_parser
-from selectolax.parser import HTMLParser
+from selectolax.lexbor import LexborHTMLParser as HTMLParser
 
 # Tracking noise that never changes what a URL points at.
 _JUNK_PARAM_PREFIXES = ("utm_", "mc_", "pk_", "hsa_", "vero_", "_hs")
